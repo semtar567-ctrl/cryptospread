@@ -411,4 +411,37 @@ Always prioritize:
 - data quality
 - execution correctness
 - risk management
-over alpha assumptions.
+over alpha assumptions                                                                                    # Trading Model
+
+This system is NOT an automated trading bot.
+
+The system is designed only for:
+
+- market monitoring
+- spread detection
+- funding analysis
+- fee-adjusted opportunity analysis
+- signal generation
+- Telegram notifications
+
+The user manually executes all trades.
+
+The platform must NOT:
+- place orders
+- manage positions
+- perform auto-execution
+- implement automated trading strategies
+- implement HFT execution systems
+
+The goal is to generate high-quality trading signals for manual decision making.
+[18.05.2026 20:40] Мой мтс 001: # Signal Quality Priority
+
+Prioritize:
+- signal quality
+- data validation
+- stale data detection
+- fee accuracy
+- funding accuracy
+- false positive reduction
+
+Latency optimization is secondary.

@@ -1,0 +1,29 @@
+# Общие настройки системы
+project_name: "cryptospread"
+
+# Список отслеживаемых пар (в формате CCXT)
+symbols:
+  - "BTC/USDT"
+  - "ETH/USDT"
+  - "SOL/USDT"
+
+# Настройки бирж
+exchanges:
+  binance:
+    enabled: true
+    taker_fee: 0.001  # 0.1%
+  bybit:
+    enabled: true
+    taker_fee: 0.001  # 0.1%
+
+# Настройки сигналов
+signals:
+  min_spread_percent: 0.05      # Минимальный спред для уведомления
+  min_liquidity_usd: 1000.0     # Минимальный объем в стакане на первом уровне
+  alert_cooldown_seconds: 60    # Как часто слать алерты по одной и той же паре
+
+# Инфраструктура
+redis:
+  host: "localhost"
+  port: 6379
+  stream_name: "market_signals"
