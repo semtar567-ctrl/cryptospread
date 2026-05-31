@@ -1,8 +1,8 @@
 use crate::models::OrderBookUpdate;
 use crate::config::AppConfig;
 use crate::engine::SpreadEngine;
-use std::sync::Arc;
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
 use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{info, error, warn};
@@ -12,16 +12,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct BinanceFuturesCollector {
     config: AppConfig,
     engine: Arc<SpreadEngine>,
+    // Mapping: ExchangeID (e.g., btcusdt) -> Unified (e.g., BTCUSDT)
+    id_map: Mutex<HashMap<String, String>>,
 }
 
 impl BinanceFuturesCollector {
     pub fn new(config: AppConfig, engine: Arc<SpreadEngine>) -> Self {
-        Self { config, engine }
+        Self { 
+            config, 
+            engine,
+            id_map: Mutex::new(HashMap::new()),
+        }
     }
 
-    pub async fn run_dynamic(&mut self, whitelist_rx: &mut tokio::sync::broadcast::Receiver<HashMap<String, Vec<String>>>) {
-        let mut current_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let url = "wss://fstream.binance.com/ws"; // Используем базовый URL для динамических подписок
+    pub async fn run_dynamic(&mut self, whitelist_rx: &mut tokio::sync::broadcast::Receiver<HashMap<String, HashMap<String, serde_json::Value>>>) {
+        let mut current_ids: HashSet<String> = HashSet::new();
+        // Используем /stream для поддержки Combined Streams (data/stream wrapper)
+        let url = "wss://fstream.binance.com/stream";
 
         loop {
             info!("Connecting to Binance Futures WS: {}", url);
@@ -32,13 +39,13 @@ impl BinanceFuturesCollector {
 
                     loop {
                         tokio::select! {
-                            // 1. Слушаем сообщения от биржи
                             msg = ws_stream.next() => {
                                 match msg {
                                     Some(Ok(Message::Text(text))) => {
                                         if let Err(e) = self.handle_message(&text).await {
-                                            // Игнорируем ошибки парсинга служебных сообщений (результаты подписки и т.д.)
-                                            // error!("Error handling message: {}", e);
+                                            if !text.contains("result") {
+                                                warn!("Binance parse error: {} | Raw: {}", e, text);
+                                            }
                                         }
                                     }
                                     Some(Ok(Message::Ping(p))) => {
@@ -50,48 +57,63 @@ impl BinanceFuturesCollector {
                                     }
                                 }
                             }
-                            // 2. Слушаем обновления белого списка (раз в минуту)
                             Ok(whitelist) = whitelist_rx.recv() => {
-                                let new_symbols: std::collections::HashSet<String> = whitelist.iter()
-                                    .filter(|(_, exchanges)| exchanges.contains(&"binance".to_string()))
-                                    .map(|(symbol, _)| symbol.clone())
-                                    .collect();
+                                let mut new_id_map = HashMap::new();
+                                let mut new_ids = HashSet::new();
 
-                                if new_symbols == current_symbols {
+                                for (unified, mapping) in whitelist.iter() {
+                                    if let Some(ex_info) = mapping.get("binance") {
+                                        if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
+                                            let binance_stream_id = ex_id.to_lowercase();
+                                            new_id_map.insert(binance_stream_id.clone(), unified.clone());
+                                            new_ids.insert(binance_stream_id);
+                                        }
+                                    }
+                                }
+
+                                if new_ids == current_ids {
                                     continue;
                                 }
 
-                                // Вычисляем что добавить, а что удалить
-                                let to_subscribe: Vec<String> = new_symbols.difference(&current_symbols)
-                                    .map(|s| s.replace("/", "").to_lowercase() + "@depth20@100ms")
+                                {
+                                    let mut id_map = self.id_map.lock().unwrap();
+                                    *id_map = new_id_map;
+                                }
+
+                                let to_subscribe: Vec<String> = new_ids.difference(&current_ids)
+                                    .map(|id| format!("{}@depth20@100ms", id))
                                     .collect();
                                 
-                                let to_unsubscribe: Vec<String> = current_symbols.difference(&new_symbols)
-                                    .map(|s| s.replace("/", "").to_lowercase() + "@depth20@100ms")
+                                let to_unsubscribe: Vec<String> = current_ids.difference(&new_ids)
+                                    .map(|id| format!("{}@depth20@100ms", id))
                                     .collect();
 
-                                // Отправляем команды в сокет
                                 if !to_subscribe.is_empty() {
-                                    info!("Binance: Subscribing to {} new symbols", to_subscribe.len());
-                                    let sub_msg = serde_json::json!({
-                                        "method": "SUBSCRIBE",
-                                        "params": to_subscribe,
-                                        "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
-                                    });
-                                    let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                                    info!("Binance: Subscribing to {} new streams", to_subscribe.len());
+                                    // Binance позволяет подписываться пачками
+                                    for chunk in to_subscribe.chunks(10) {
+                                        let sub_msg = serde_json::json!({
+                                            "method": "SUBSCRIBE",
+                                            "params": chunk,
+                                            "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+                                        });
+                                        let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                                    }
                                 }
 
                                 if !to_unsubscribe.is_empty() {
-                                    info!("Binance: Unsubscribing from {} symbols", to_unsubscribe.len());
-                                    let unsub_msg = serde_json::json!({
-                                        "method": "UNSUBSCRIBE",
-                                        "params": to_unsubscribe,
-                                        "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 1
-                                    });
-                                    let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
+                                    info!("Binance: Unsubscribing from {} streams", to_unsubscribe.len());
+                                    for chunk in to_unsubscribe.chunks(10) {
+                                        let unsub_msg = serde_json::json!({
+                                            "method": "UNSUBSCRIBE",
+                                            "params": chunk,
+                                            "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 1
+                                        });
+                                        let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
+                                    }
                                 }
 
-                                current_symbols = new_symbols;
+                                current_ids = new_ids;
                             }
                         }
                     }
@@ -104,63 +126,35 @@ impl BinanceFuturesCollector {
         }
     }
 
-    fn get_current_map_for_exchange(&self, symbols: &[String]) -> HashMap<String, Vec<String>> {
-        let mut map = HashMap::new();
-        for s in symbols {
-            map.insert(s.clone(), vec!["binance".to_string()]);
-        }
-        map
-    }
-
-    async fn connect_and_listen(&self, url: &str) {
-        match connect_async(url).await {
-            Ok((mut ws_stream, _)) => {
-                info!("Connected to Binance Futures");
-                while let Some(msg) = ws_stream.next().await {
-                    match msg {
-                        Ok(Message::Text(text)) => {
-                            if let Err(e) = self.handle_message(&text).await {
-                                error!("Error handling message: {}", e);
-                            }
-                        }
-                        Ok(Message::Ping(p)) => {
-                            let _ = ws_stream.send(Message::Pong(p)).await;
-                        }
-                        Ok(Message::Close(_)) | Err(_) => break,
-                        _ => {}
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Failed to connect to Binance: {}", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            }
-        }
-    }
-
     async fn handle_message(&self, text: &str) -> anyhow::Result<()> {
         let v: Value = serde_json::from_str(text)?;
         
         if let Some(data) = v.get("data") {
-            let symbol = v["stream"].as_str().unwrap_or("unknown")
-                .split('@').next().unwrap_or("unknown")
-                .to_uppercase()
-                .replace("/", ""); // Убираем / для унификации
-            
-            let bids = self.parse_levels(data.get("b").and_then(|b| b.as_array()));
-            let asks = self.parse_levels(data.get("a").and_then(|a| a.as_array()));
-            
-            let update = OrderBookUpdate {
-                exchange: "binance".to_string(),
-                symbol,
-                bids,
-                asks,
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
-            };
+            if let Some(stream) = v.get("stream").and_then(|s| s.as_str()) {
+                let binance_id = stream.split('@').next().unwrap_or("unknown");
+                
+                let unified_symbol = {
+                    let id_map = self.id_map.lock().unwrap();
+                    id_map.get(binance_id).cloned()
+                };
 
-            // Отправляем данные в движок
-            if let Err(e) = self.engine.process_update(update).await {
-                error!("Error processing update in engine: {}", e);
+                if let Some(symbol) = unified_symbol {
+                    let bids = self.parse_levels(data.get("b").and_then(|b| b.as_array()));
+                    let asks = self.parse_levels(data.get("a").and_then(|a| a.as_array()));
+                    
+                    let update = OrderBookUpdate {
+                        exchange: "binance".to_string(),
+                        symbol,
+                        bids,
+                        asks,
+                        timestamp: data.get("E").and_then(|t| t.as_u64()).unwrap_or(0),
+                        local_timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
+                    };
+
+                    if let Err(e) = self.engine.process_update(update).await {
+                        error!("Error processing update in engine: {}", e);
+                    }
+                }
             }
         }
 

@@ -25,5 +25,8 @@ signals:
 # Инфраструктура
 redis:
   host: "localhost"
-  port: 6379
+  port: 6380
   stream_name: "market_signals"
+
+database:
+  url: "postgresql+asyncpg://crypto:crypto@localhost:5433/crypto"

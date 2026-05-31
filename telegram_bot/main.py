@@ -2,6 +2,10 @@ import asyncio
 import logging
 import structlog
 import aiohttp.resolver
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Фикс DNS для Windows: принудительно используем системный резолвер
 aiohttp.resolver.DefaultResolver = aiohttp.resolver.ThreadedResolver
@@ -29,7 +33,7 @@ async def start_command(message: types.Message):
             user = User(user_id=user_id, username=username, is_admin=True)
             session.add(user)
             session.add(UserSetting(user_id=user_id, trade_type="futures_futures"))
-            for ex_id in ["binance", "bybit", "okx"]:
+            for ex_id in ["binance", "bybit", "okx", "mexc"]:
                 session.add(UserExchange(user_id=user_id, exchange_id=ex_id))
             await session.commit()
             await message.answer(f"👋 Добро пожаловать, {username or 'друг'}!", reply_markup=get_reply_main_menu())
@@ -69,7 +73,7 @@ async def exchanges_settings_callback(callback: types.CallbackQuery):
         result = await session.execute(stmt)
         existing_exchanges = {ex.exchange_id for ex in result.scalars().all()}
         
-        required_exchanges = ["binance", "bybit", "okx"]
+        required_exchanges = ["binance", "bybit", "okx", "mexc"]
         added = False
         for ex_id in required_exchanges:
             if ex_id not in existing_exchanges:
@@ -108,6 +112,9 @@ async def toggle_setting_callback(callback: types.CallbackQuery):
             setattr(settings_obj, field, not current_val)
             await session.commit()
             
+            # СИНХРОНИЗАЦИЯ С REDIS
+            await sync_user_settings_to_redis(callback.from_user.id, session)
+            
             # Обновляем меню
             await callback.message.edit_reply_markup(reply_markup=get_futures_settings_keyboard(settings_obj))
             await callback.answer("Настройка сохранена")
@@ -125,6 +132,9 @@ async def toggle_exchange_callback(callback: types.CallbackQuery):
             ex_obj.is_enabled = not ex_obj.is_enabled
             await session.commit()
             
+            # СИНХРОНИЗАЦИЯ С REDIS
+            await sync_user_settings_to_redis(callback.from_user.id, session)
+            
             # Получаем обновленный список для перерисовки
             stmt_all = select(UserExchange).where(UserExchange.user_id == callback.from_user.id)
             result_all = await session.execute(stmt_all)
@@ -141,6 +151,8 @@ async def placeholder_callback(callback: types.CallbackQuery):
 
 from aiogram.fsm.context import FSMContext
 from telegram_bot.utils.states import SettingsStates
+
+from telegram_bot.utils.redis_sync import sync_user_settings_to_redis, sync_all_users_to_redis
 
 # ... (start_command, menu_button_handler, profile_button_handler без изменений)
 
@@ -193,6 +205,10 @@ async def process_numeric_input(message: types.Message, state: FSMContext):
         if settings_obj:
             setattr(settings_obj, field, val)
             await session.commit()
+            
+            # СИНХРОНИЗАЦИЯ С REDIS
+            await sync_user_settings_to_redis(message.from_user.id, session)
+            
             await message.answer(f"✅ Значение сохранено!", reply_markup=get_futures_settings_keyboard(settings_obj))
             await state.clear()
 
@@ -203,6 +219,10 @@ async def toggle_notifications_handler(message: types.Message):
         if user:
             user.is_active = not user.is_active
             await session.commit()
+            
+            # СИНХРОНИЗАЦИЯ С REDIS
+            await sync_user_settings_to_redis(message.from_user.id, session)
+            
             status_text = "включены" if user.is_active else "выключены"
             await message.answer(f"🔔 Уведомления {status_text}", reply_markup=get_reply_main_menu(user.is_active))
 
@@ -223,6 +243,11 @@ class IPv4Session(AiohttpSession):
 async def main():
     logger.info("Initializing database...")
     await init_db()
+    
+    # ПЕРВИЧНАЯ СИНХРОНИЗАЦИЯ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ В REDIS
+    logger.info("Syncing all users to Redis...")
+    async with AsyncSessionLocal() as session:
+        await sync_all_users_to_redis(session)
     
     logger.info("Starting Telegram Bot...")
     

@@ -5,3 +5,12 @@ target/
 .vscode/
 .pytest_cache/
 *.pyc
+*.log
+*.db
+backups/
+logs/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+build/

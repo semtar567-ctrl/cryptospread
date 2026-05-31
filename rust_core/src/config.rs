@@ -23,12 +23,18 @@ pub struct RedisConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub project_name: String,
     pub symbols: Vec<String>,
     pub exchanges: HashMap<String, ExchangeConfig>,
     pub signals: SignalConfig,
     pub redis: RedisConfig,
+    pub database: DatabaseConfig,
 }
 
 impl AppConfig {

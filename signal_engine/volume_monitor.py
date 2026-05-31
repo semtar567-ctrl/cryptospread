@@ -1,7 +1,12 @@
 import sys
+import os
 import asyncio
 import socket
 import json
+import time
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import ccxt.async_support as ccxt
 import structlog
 from redis.asyncio import Redis
@@ -12,113 +17,150 @@ from telegram_bot.database.models import UserSetting
 from aiohttp.resolver import ThreadedResolver
 import aiohttp
 
-# Фикс DNS и Event Loop для Windows
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 logger = structlog.get_logger()
 
-# Кастомный коннектор для aiohttp, чтобы избежать таймаутов DNS на Windows
 def get_custom_session():
     connector = aiohttp.TCPConnector(resolver=ThreadedResolver(), family=socket.AF_INET)
     return aiohttp.ClientSession(connector=connector)
 
-class VolumeMonitor:
+class MetaMonitor:
     def __init__(self):
-        self.redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
-        # Инициализируем биржи (только фьючерсы) с кастомной сессией
+        self.redis = Redis(host="127.0.0.1", port=6380, decode_responses=True)
+        # Инициализируем биржи с флагами для фьючерсов
         self.exchanges = {
             "binance": ccxt.binance({"options": {"defaultType": "future"}}),
             "bybit": ccxt.bybit({"options": {"defaultType": "future"}}),
-            "okx": ccxt.okx({"options": {"defaultType": "swap"}})
+            "okx": ccxt.okx({"options": {"defaultType": "swap"}}),
+            "mexc": ccxt.mexc({"options": {"defaultType": "swap"}})
         }
         
     async def init_sessions(self):
         for ex in self.exchanges.values():
             ex.session = get_custom_session()
 
-    async def fetch_volumes(self, exchange_id, exchange):
-        """Получает тикеры и фильтрует USDT фьючерсы по объему."""
+    async def fetch_exchange_meta(self, exchange_id, exchange):
+        """
+        Загружает рынки и фильтрует только бессрочные фьючерсы (Swaps).
+        Возвращает: { unified_symbol: { "id": exchange_id_symbol, "vol": 24h_vol, "funding": rate } }
+        """
         try:
+            markets = await exchange.load_markets()
             tickers = await exchange.fetch_tickers()
-            valid_symbols = []
             
-            # Получаем минимальный порог из БД (берем максимальный среди всех юзеров для безопасности)
-            async with AsyncSessionLocal() as session:
-                stmt = select(UserSetting.min_volume_24h)
-                result = await session.execute(stmt)
-                volumes = result.scalars().all()
-                min_vol_threshold = min(volumes) if volumes else 1_000_000
-
-            for symbol, data in tickers.items():
-                # Фильтруем: только USDT пары и только Futures/Swap
-                # CCXT нормализует фьючерсы как 'BTC/USDT:USDT' или 'BTC/USDT'
-                quote_vol = data.get('quoteVolume')
-                if not quote_vol:
-                    # Fallback для OKX (использует volCcy24h в сыром ответе)
-                    vol_ccy = data.get('info', {}).get('volCcy24h', 0)
-                    try:
-                        quote_vol = float(vol_ccy)
-                    except (ValueError, TypeError):
-                        quote_vol = 0
-
-                if "/USDT" in symbol and quote_vol >= min_vol_threshold:
-                    valid_symbols.append(symbol)
-            
-            return set(valid_symbols)
-        except Exception as e:
-            logger.error(f"Error fetching volumes from {exchange_id}", error=str(e))
-            return set()
-
-    async def update_active_symbols(self):
-        """Основной цикл мониторинга объемов и параметров фильтрации."""
-        logger.info("Volume Monitor started")
-        while True:
+            # Получаем фандинг (опционально, если биржа поддерживает)
+            funding_rates = {}
+            next_funding_times = {}
             try:
-                # 1. Транслируем минимальный спред из БД в Redis для Rust
-                async with AsyncSessionLocal() as session:
-                    stmt = select(UserSetting.min_spread_percent)
-                    result = await session.execute(stmt)
-                    spreads = result.scalars().all()
-                    if spreads:
-                        # Берем минимальный спред среди всех пользователей (самый широкий охват)
-                        global_min_spread = min(spreads)
-                        await self.redis.set("global_min_spread", str(global_min_spread))
-                        logger.info("Global min spread updated in Redis", value=global_min_spread)
+                funding_data = await exchange.fetch_funding_rates()
+                for symbol, data in funding_data.items():
+                    funding_rates[symbol] = data.get("fundingRate", 0)
+                    next_funding_times[symbol] = data.get("nextFundingTimestamp")
+            except:
+                logger.warn(f"Could not fetch funding rates for {exchange_id}")
 
-                # 2. Собираем данные об объемах
-                tasks = [self.fetch_volumes(eid, ex) for eid, ex in self.exchanges.items()]
-                results = await asyncio.gather(*tasks)
+            results = {}
+            for symbol, market in markets.items():
+                # СТРОГИЕ ФИЛЬТРЫ:
+                # 1. Только Swaps (бессрочные фьючерсы)
+                # 2. Только USDT/USDC обеспечение (Linear)
+                # 3. Активные торги
+                if not market.get("swap"): continue
+                if market.get("settle") not in ["USDT", "USDC"]: continue
+                if not market.get("active"): continue
                 
-                # 3. Формируем маппинг символов для стратегии 2+ биржи
-                exchange_ids = list(self.exchanges.keys())
-                symbol_to_exchanges = {}
-                for i, liquid_symbols in enumerate(results):
-                    ex_id = exchange_ids[i]
-                    for symbol in liquid_symbols:
-                        # CCXT возвращает тикеры вида BTC/USDT:USDT. Нам нужен чистый BTC/USDT
-                        clean_symbol = symbol.split(':')[0]
-                        if clean_symbol not in symbol_to_exchanges:
-                            symbol_to_exchanges[clean_symbol] = []
-                        symbol_to_exchanges[clean_symbol].append(ex_id)
+                # Приводим к единому формату BTCUSDT
+                unified = symbol.split(":")[0].replace("/", "")
                 
-                # Оставляем только те символы, которые ликвидны МИНИМУМ на двух биржах
-                final_whitelist = {
-                    symbol: exchanges 
-                    for symbol, exchanges in symbol_to_exchanges.items() 
-                    if len(exchanges) >= 2
+                # Получаем объем из тикера
+                ticker = tickers.get(symbol, {})
+                quote_vol = ticker.get("quoteVolume", 0)
+                
+                # Если объем нулевой, пробуем вытащить из info (специфично для OKX)
+                if not quote_vol and "info" in ticker:
+                    quote_vol = float(ticker["info"].get("volCcy24h", 0))
+
+                results[unified] = {
+                    "exchange_id_symbol": market["id"], # ВАЖНО: Точный ID биржи (напр. BTC-USDT-SWAP)
+                    "volume_24h": quote_vol,
+                    "funding_rate": funding_rates.get(symbol, 0),
+                    "next_funding_at": next_funding_times.get(symbol),
+                    "last_price": ticker.get("last", 0)
                 }
                 
+                # Обновляем мета-данные в Redis немедленно для каждого инструмента
+                meta_data = results[unified]
+                # Мы не можем писать здесь meta_key, так как нам нужен ex_id. 
+                # Логика записи перенесена ниже в цикл update_all.
+            
+            logger.info(f"Fetched {len(results)} swaps from {exchange_id}")
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching meta from {exchange_id}", error=str(e))
+            return {}
+
+    async def update_all(self):
+        logger.info("Meta Monitor (Strict Mode) started")
+        while True:
+            try:
+                # 1. Обновляем глобальный порог спреда
+                async with AsyncSessionLocal() as session:
+                    stmt = select(UserSetting.min_spread_percent, UserSetting.min_volume_24h)
+                    res = await session.execute(stmt)
+                    settings_list = res.all()
+                    min_spread = min([s[0] for s in settings_list]) if settings_list else 0.1
+                    min_vol_threshold = min([s[1] for s in settings_list]) if settings_list else 1_000_000
+                    await self.redis.set("global_min_spread", str(min_spread))
+
+                # 2. Собираем данные параллельно
+                tasks = [self.fetch_exchange_meta(eid, ex) for eid, ex in self.exchanges.items()]
+                exchange_results = await asyncio.gather(*tasks)
+                
+                exchange_ids = list(self.exchanges.keys())
+                symbol_to_exchanges = {} # unified -> [ex_ids]
+                full_map = {} # unified -> ex_id -> meta_data
+
+                for i, meta in enumerate(exchange_results):
+                    ex_id = exchange_ids[i]
+                    for unified, data in meta.items():
+                        # Фильтр по объему
+                        if data["volume_24h"] < min_vol_threshold:
+                            continue
+                            
+                        if unified not in symbol_to_exchanges:
+                            symbol_to_exchanges[unified] = []
+                            full_map[unified] = {}
+                        
+                        symbol_to_exchanges[unified].append(ex_id)
+                        full_map[unified][ex_id] = data
+
+                # 3. Формируем финальный Whitelist (только те, что на 2+ биржах)
+                final_whitelist = {}
+                for unified, exs in symbol_to_exchanges.items():
+                    if len(exs) >= 2:
+                        # Собираем точные ID для каждой биржи
+                        ex_mappings = {}
+                        for ex_id in exs:
+                            ex_mappings[ex_id] = full_map[unified][ex_id]["exchange_id_symbol"]
+                            
+                            # Сохраняем мета-данные (фандинг и т.д.)
+                            meta_key = f"meta:{ex_id}:{unified}"
+                            await self.redis.set(meta_key, json.dumps(full_map[unified][ex_id]), ex=600)
+                        
+                        final_whitelist[unified] = ex_mappings
+
                 if final_whitelist:
+                    # Записываем маппинг символов: BTCUSDT -> { "binance": "BTCUSDT", "okx": "BTC-USDT-SWAP" }
                     await self.redis.set("active_symbols_map", json.dumps(final_whitelist))
-                    logger.info("Whitelist updated", count=len(final_whitelist))
+                    logger.info("Whitelist updated (Strict Swaps only)", count=len(final_whitelist))
                 else:
-                    logger.warn("No liquid symbols found on 2+ exchanges")
+                    logger.warn("No liquid symbols found after strict filtering")
 
             except Exception as e:
-                logger.error("Error in Volume Monitor loop", error=str(e))
+                logger.error("Error in Meta Monitor loop", error=str(e))
             
-            # Спим 1 минуту (критическое требование пользователя)
             await asyncio.sleep(60)
 
     async def close(self):
@@ -126,15 +168,12 @@ class VolumeMonitor:
             await ex.close()
 
 async def main():
-    monitor = VolumeMonitor()
+    monitor = MetaMonitor()
     await monitor.init_sessions()
     try:
-        await monitor.update_active_symbols()
+        await monitor.update_all()
     finally:
         await monitor.close()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())

@@ -1,16 +1,20 @@
 import sys
+import os
 import asyncio
 import json
 import time
 import socket
 import structlog
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from telegram_bot.config import settings
 from telegram_bot.database.engine import AsyncSessionLocal
-from telegram_bot.database.models import User, UserSetting, UserExchange
-from aiogram import Bot
+from telegram_bot.database.models import User
+from aiogram import Bot, types
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp.resolver import ThreadedResolver
 
@@ -23,177 +27,236 @@ logger = structlog.get_logger()
 class IPv4Session(AiohttpSession):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Фикс для Windows + VPN: принудительно используем IPv4 и стандартный резолвер
         self._connector_init["resolver"] = ThreadedResolver()
         self._connector_init["family"] = socket.AF_INET
 
 class SignalEngine:
     def __init__(self):
+        # Используем настройки из конфига
         self.redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
         self.bot = Bot(token=settings.telegram_bot_token, session=IPv4Session())
-        # Хранилище для отслеживания времени жизни связки: (symbol, buy_ex, sell_ex) -> first_seen_timestamp
-        self.active_spreads = {}
+        self.active_spreads = {} # (symbol, buy, sell, user_id) -> start_time
+        self.last_alert_sent = {} # (symbol, buy, sell, user_id) -> last_time
+        self.msg_queue = asyncio.Queue()
+        self.is_running = True
 
     async def run(self):
-        logger.info("Signal Engine started. Listening for market data...")
+        logger.info("Signal Engine (Light) started. Waiting for pre-filtered signals from Rust...")
         
-        # Начинаем читать только новые сообщения с момента запуска
+        # Запускаем воркер для очереди сообщений (Throttling)
+        asyncio.create_task(self.message_worker())
+        
+        # Стрим, в который пишет Rust
+        stream_name = "market_signals"
+        
         last_id = "$"
-        stream_name = getattr(settings, 'redis', {}).get('stream_name', 'market_signals') if isinstance(getattr(settings, 'redis', None), dict) else "market_signals"
-
-        while True:
+        while self.is_running:
             try:
-                streams = {stream_name: last_id}
-                
-                response = await self.redis.xread(streams, count=10, block=1000)
+                response = await self.redis.xread({stream_name: last_id}, count=50, block=1000)
+                if not response: continue
                 
                 for s_name, messages in response:
                     for msg_id, data in messages:
                         raw_payload = data.get("data")
                         if raw_payload:
-                            signal_data = json.loads(raw_payload)
-                            await self.process_signal(signal_data)
-                        
-                        # Обновляем ID, чтобы в следующем цикле читать только новые
+                            try:
+                                await self.process_rust_signal(json.loads(raw_payload))
+                            except Exception as pe:
+                                logger.error("Parse error", error=str(pe), payload=raw_payload[:100])
                         last_id = msg_id
-
             except Exception as e:
                 logger.error("Error in Signal Engine loop", error=str(e))
                 await asyncio.sleep(1)
 
-    def calculate_vwap(self, levels, volume_usd):
-        """
-        Расчет средневзвешенной цены (VWAP) для покупки или продажи на заданный объем USD.
-        levels: [[price, amount], ...]
-        volume_usd: сумма в долларах
-        """
-        total_usd = 0.0
-        total_qty = 0.0
-        
-        for price, qty in levels:
-            level_usd = price * qty
-            if total_usd + level_usd >= volume_usd:
-                # Берем только часть этого уровня, чтобы добить до нужного объема
-                needed_usd = volume_usd - total_usd
-                needed_qty = needed_usd / price
-                total_qty += needed_qty
-                total_usd += needed_usd
-                break
-            else:
-                total_qty += qty
-                total_usd += level_usd
-        
-        if total_usd < volume_usd:
-            # Ликвидности не хватило даже на 20 уровнях
-            return None
-            
-        return total_usd / total_qty
+    async def message_worker(self):
+        """Воркер, который отправляет сообщения из очереди с задержкой 1.1 сек для обхода Flood Control."""
+        logger.info("Message worker started (Throttling: 1.1s, Queue Limit: 20)")
+        while self.is_running:
+            try:
+                # ОГРАНИЧЕНИЕ ОЧЕРЕДИ: Если сигналов больше 20, удаляем лишние старые
+                current_size = self.msg_queue.qsize()
+                if current_size > 20:
+                    logger.warning("Queue overflow, dropping old signals", current_size=current_size, keep=20)
+                    while self.msg_queue.qsize() > 20:
+                        try:
+                            self.msg_queue.get_nowait()
+                            self.msg_queue.task_done()
+                        except asyncio.QueueEmpty:
+                            break
 
-    async def process_signal(self, data):
+                user_id, msg, kb = await self.msg_queue.get()
+
+                try:
+                    await self.bot.send_message(
+                        user_id, 
+                        msg, 
+                        parse_mode="Markdown", 
+                        reply_markup=kb, 
+                        disable_web_page_preview=True
+                    )
+                    logger.info("Signal sent to Telegram", user_id=user_id)
+                except Exception as e:
+                    if "Flood control exceeded" in str(e):
+                        logger.error("Flood control still active, waiting longer...", error=str(e))
+                        await asyncio.sleep(30) # Если все равно поймали флуд, ждем 30 сек
+                    else:
+                        logger.error("Failed to send alert in worker", error=str(e))
+                
+                await asyncio.sleep(1.1) # Задержка между сообщениями
+                self.msg_queue.task_done()
+            except Exception as e:
+                logger.error("Error in message worker", error=str(e))
+                await asyncio.sleep(1)
+
+    async def process_rust_signal(self, data):
+        # ... (начало метода без изменений)
         symbol = data["symbol"]
         buy_ex = data["buy_on"].lower()
         sell_ex = data["sell_on"].lower()
-        raw_spread = data.get("net_spread", 0)
+        target_users = data.get("target_users", [])
+        user_metrics = data.get("user_metrics", {})
 
-        logger.info("Processing signal from Redis", symbol=symbol, buy_ex=buy_ex, sell_ex=sell_ex, raw_spread=f"{raw_spread:.4f}%")
+        if not target_users:
+            return
+
+        now = time.time()
+
+        for uid_str in target_users:
+            uid = int(uid_str)
+            metrics = user_metrics.get(str(uid))
+            if not metrics: continue
+
+            # 1. Анти-спам (Deduplication) - 60 секунд на одну и ту же связку для юзера
+            key = (symbol, buy_ex, sell_ex, uid)
+            if key in self.last_alert_sent:
+                if now - self.last_alert_sent[key] < 60:
+                    continue
+
+            # 2. Мета-данные
+            meta_key_buy = f"meta:{buy_ex}:{symbol.replace('/', '').replace('-', '')}"
+            meta_key_sell = f"meta:{sell_ex}:{symbol.replace('/', '').replace('-', '')}"
+            
+            b_meta_raw = await self.redis.get(meta_key_buy)
+            s_meta_raw = await self.redis.get(meta_key_sell)
+            
+            funding_buy = 0.0
+            funding_sell = 0.0
+            vol_24h_buy = 0.0
+            vol_24h_sell = 0.0
+            next_f_buy = None
+            next_f_sell = None
+
+            if b_meta_raw:
+                try:
+                    bm = json.loads(b_meta_raw)
+                    funding_buy = bm.get("funding_rate", 0.0)
+                    vol_24h_buy = bm.get("volume_24h", 0.0)
+                    # Новое поле: время следующего фандинга
+                    next_f_buy = bm.get("next_funding_at")
+                except: pass
+            
+            if s_meta_raw:
+                try:
+                    sm = json.loads(s_meta_raw)
+                    funding_sell = sm.get("funding_rate", 0.0)
+                    vol_24h_sell = sm.get("volume_24h", 0.0)
+                    # Новое поле: время следующего фандинга
+                    next_f_sell = sm.get("next_funding_at")
+                except: pass
+
+            # 3. Подготовка данных
+            discovery_ts = data.get("timestamp", int(now * 1000))
+            latency_ms = int(time.time() * 1000) - discovery_ts
+
+            vwap_buy = metrics.get("vwap_buy", 0.0)
+            vwap_sell = metrics.get("vwap_sell", 0.0)
+            slippage = metrics.get("slippage", 0.0)
+            net_spread = data["net_spread"]
+            eff_net_spread = net_spread - slippage
+
+            signal_info = {
+                "symbol": symbol.replace("/", "").replace("-", ""), 
+                "buy_ex": buy_ex, 
+                "sell_ex": sell_ex,
+                "net_spread": net_spread,
+                "eff_net_spread": eff_net_spread,
+                # Фандинг спред: положительный - это доп. профит для нас
+                "funding_spread": (funding_sell - funding_buy) * 100.0,
+                "vol_usd": metrics.get("working_volume", 0),
+                "buy_price": vwap_buy if vwap_buy > 0 else data["buy_price"],
+                "buy_funding": funding_buy * 100, 
+                "buy_vol_24h": vol_24h_buy,
+                "buy_slip": slippage / 2,
+                "buy_next_f": next_f_buy,
+                "buy_full": vwap_buy > 0,
+                "sell_price": vwap_sell if vwap_sell > 0 else data["sell_price"],
+                "sell_funding": funding_sell * 100, 
+                "sell_vol_24h": vol_24h_sell,
+                "sell_slip": slippage / 2,
+                "sell_next_f": next_f_sell,
+                "sell_full": vwap_sell > 0,
+                "latency": latency_ms
+            }
+
+            # Вместо прямой отправки добавляем в очередь
+            await self.queue_styled_alert(uid, signal_info)
+            self.last_alert_sent[key] = now
+
+    async def queue_styled_alert(self, user_id, s):
+        """Формирует сообщение и кладет его в очередь на отправку."""
+        tv_symbol = f"BYBIT:{s['symbol']}.P/OKX:{s['symbol']}.P"
+        tv_link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
         
-        async with AsyncSessionLocal() as session:
-            stmt = select(User).where(User.is_active == True).options(
-                selectinload(User.settings),
-                selectinload(User.exchanges)
-            )
-            result = await session.execute(stmt)
-            users = result.scalars().all()
+        warn_b = " ⚠️ Мало ликвидности" if not s["buy_full"] else ""
+        warn_s = " ⚠️ Мало ликвидности" if not s["sell_full"] else ""
 
-            if not users:
-                logger.warning("No active users found in DB")
-                return
-
-            for user in users:
-                user_exchanges = {ex.exchange_id for ex in user.exchanges if ex.is_enabled}
-                if buy_ex not in user_exchanges or sell_ex not in user_exchanges:
-                    logger.debug("Exchanges not enabled for user", user_id=user.user_id, buy_ex=buy_ex, sell_ex=sell_ex)
-                    continue
-
-                user_setting = next((s for s in user.settings if s.trade_type == "futures_futures"), None)
-                if not user_setting or not user_setting.is_enabled:
-                    logger.debug("Futures-Futures disabled for user", user_id=user.user_id)
-                    continue
-
-                # --- РАСЧЕТ ПРОСКАЛЬЗЫВАНИЯ ---
-                working_vol = user_setting.working_volume_usd
-                
-                # На бирже Buy мы ПОКУПАЕМ (смотрим Asks)
-                avg_buy_price = self.calculate_vwap(data["buy_book"]["asks"], working_vol)
-                # На бирже Sell мы ПРОДАЕМ (смотрим Bids)
-                avg_sell_price = self.calculate_vwap(data["sell_book"]["bids"], working_vol)
-
-                if avg_buy_price is None or avg_sell_price is None:
-                    logger.info("Not enough liquidity for volume", symbol=symbol, volume=working_vol)
-                    continue
-
-                # Пересчитываем спред с учетом РЕАЛЬНЫХ цен
-                real_spread_raw = avg_sell_price - avg_buy_price
-                real_spread_percent = (real_spread_raw / avg_buy_price) * 100.0
-                
-                # Вычитаем комиссии (берём из конфига системы)
-                buy_fee = 0.0006 # 0.06%
-                sell_fee = 0.0006 # 0.06%
-                net_real_spread = real_spread_percent - (buy_fee + sell_fee) * 100.0
-
-                logger.info("Real spread calculated", 
-                            symbol=symbol, 
-                            vol=working_vol, 
-                            net_real=f"{net_real_spread:.4f}%", 
-                            threshold=f"{user_setting.min_spread_percent:.4f}%")
-
-                if user_setting.filter_spread_enabled:
-                    if net_real_spread < user_setting.min_spread_percent:
-                        logger.debug("Spread below threshold", symbol=symbol, net_real=net_real_spread)
-                        continue
-
-                # --- ПРОВЕРКА ВРЕМЕНИ ЖИЗНИ ---
-                if user_setting.filter_lifetime_enabled:
-                    key = (symbol, buy_ex, sell_ex, user.user_id)
-                    now = time.time()
-                    if key not in self.active_spreads:
-                        self.active_spreads[key] = now
-                        logger.info("Spread detected, waiting for lifetime", symbol=symbol, wait=user_setting.min_lifetime_seconds)
-                        continue
-                    else:
-                        if now - self.active_spreads[key] < user_setting.min_lifetime_seconds:
-                            continue
-                
-                # Добавляем реальные данные в сообщение
-                data["real_buy_price"] = avg_buy_price
-                data["real_sell_price"] = avg_sell_price
-                data["real_net_spread"] = net_real_spread
-                data["vol_used"] = working_vol
-
-                await self.send_alert(user.user_id, data)
-                if user_setting.filter_lifetime_enabled:
-                    del self.active_spreads[(symbol, buy_ex, sell_ex, user.user_id)]
-
-    async def send_alert(self, user_id, data):
         msg = (
-            f"🚀 **АРБИТРАЖНАЯ СВЯЗКА** (#{data['symbol']})\n\n"
-            f"🟢 **BUY**: {data['buy_on'].upper()}\n"
-            f"   Цена: {data['real_buy_price']:.5f} (VWAP)\n\n"
-            f"🔴 **SELL**: {data['sell_on'].upper()}\n"
-            f"   Цена: {data['real_sell_price']:.5f} (VWAP)\n\n"
-            f"📊 Чистый спред: **{data['real_net_spread']:.3f}%**\n"
-            f"💰 Объем: ${data['vol_used']:g}\n"
-            f"🕒 Время: {time.strftime('%H:%M:%S')}"
+            f"🟦🟧 **{s['symbol']}** (F/F)\n"
+            f"↑ {s['buy_ex'].upper()} F. / ↓ {s['sell_ex'].upper()} F.\n\n"
+            f"📊 Чистый спред (Best): **{s['net_spread']:.2f}%**\n"
+            f"📈 Эфф. спред (VWAP): **{s['eff_net_spread']:.2f}%**\n"
+            f"💎 Фандинг Спред: {s['funding_spread']:.3f}%\n"
+            f"💰 Твой объем: ${s['vol_usd']:g}\n\n"
+            f"🟩 ЛОНГ НА ФЬЮЧЕРСЕ:\n"
+            f"[{s['buy_ex'].upper()}]({self._get_ex_link(s['buy_ex'], s['symbol'])})\n"
+            f"VWAP Цена: {s['buy_price']:.5f}\n"
+            f"Фандинг: {s['buy_funding']:.3f}% | {self._format_time_to_funding(s['buy_next_f'])}\n"
+            f"Объем 24ч: ${s['buy_vol_24h']/1e6:.1f}M\n"
+            f"Проскальзывание: {s['buy_slip']:.3f}%{warn_b}\n\n"
+            f"🟥 ШОРТ НА ФЬЮЧЕРСЕ:\n"
+            f"[{s['sell_ex'].upper()}]({self._get_ex_link(s['sell_ex'], s['symbol'])})\n"
+            f"VWAP Цена: {s['sell_price']:.5f}\n"
+            f"Фандинг: {s['sell_funding']:.3f}% | {self._format_time_to_funding(s['sell_next_f'])}\n"
+            f"Объем 24ч: ${s['sell_vol_24h']/1e6:.1f}M\n"
+            f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
+            f"⏱ Задержка: {s['latency']}мс\n"
+            f"📈 [График спреда]({tv_link})\n"
         )
+        kb = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎯 Отслеживать схождение", callback_data=f"track_{s['symbol']}_{s['buy_ex']}_{s['sell_ex']}")]
+        ])
+        
+        await self.msg_queue.put((user_id, msg, kb))
+        logger.debug("Signal added to queue", symbol=s['symbol'], qsize=self.msg_queue.qsize())
+
+    def _get_ex_link(self, exchange, symbol):
+        return {
+            "binance": f"https://www.binance.com/en/futures/{symbol}",
+            "bybit": f"https://www.bybit.com/trade/usdt/{symbol}",
+            "okx": f"https://www.okx.com/trade-swap/{symbol.lower()}-usdt",
+            "mexc": f"https://contract.mexc.com/exchange/{symbol}_USDT"
+        }.get(exchange, "#")
+
+    def _format_time_to_funding(self, ts_ms):
+        if not ts_ms: return "н/д"
         try:
-            await self.bot.send_message(user_id, msg, parse_mode="Markdown")
-            logger.info("Alert sent to user", user_id=user_id, symbol=data['symbol'])
-        except Exception as e:
-            logger.error("Failed to send telegram alert", error=str(e))
+            d = (int(ts_ms) / 1000) - time.time()
+            if d < 0: return "сейчас"
+            return f"{int(d // 3600)}ч {int((d % 3600) // 60)}м"
+        except: return "н/д"
 
 async def main():
-    engine = SignalEngine()
-    await engine.run()
+    await SignalEngine().run()
 
 if __name__ == "__main__":
     asyncio.run(main())

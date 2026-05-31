@@ -36,7 +36,7 @@ def get_futures_settings_keyboard(settings):
         [InlineKeyboardButton(text=f"🌐 >{settings.min_spread_percent}%", callback_data="edit_spread")],
         
         # Объем сделки (Рабочий объем)
-        [InlineKeyboardButton(text="💰 Объем сделки:", callback_data="none")],
+        [InlineKeyboardButton(text="💰 Объем сделки (Ликвидность):", callback_data="none")],
         [InlineKeyboardButton(text=get_on_off(settings.filter_slippage_enabled), callback_data="toggle_filter_slippage"),
          InlineKeyboardButton(text=f"🌐 >${settings.working_volume_usd:g}", callback_data="edit_work_vol")],
         

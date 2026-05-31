@@ -2,6 +2,7 @@ mod config;
 mod models;
 mod collectors;
 mod engine;
+mod user_manager;
 
 use crate::config::AppConfig;
 use crate::engine::SpreadEngine;
@@ -20,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     // Загрузка конфигурации
     let config = match AppConfig::new() {
         Ok(cfg) => {
-            info!("Config loaded: {} symbols tracked", cfg.symbols.len());
+            info!("Config loaded");
             cfg
         },
         Err(e) => {
@@ -30,10 +31,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Инициализация SpreadEngine
-    let engine = Arc::new(SpreadEngine::new(config.clone())?);
+    let engine = Arc::new(SpreadEngine::new(config.clone()).await?);
+
+    // Запуск слушателя Redis Pub/Sub для мгновенного обновления настроек
+    let pubsub_engine = Arc::clone(&engine);
+    tokio::spawn(async move {
+        if let Err(e) = pubsub_engine.start_pubsub_listener().await {
+            error!("Redis Pub/Sub listener error: {}", e);
+        }
+    });
 
     // Канал для уведомления о смене белого списка монет
-    let (whitelist_tx, _) = tokio::sync::broadcast::channel::<HashMap<String, Vec<String>>>(16);
+    // Используем Value для поддержки гибкого формата от Python
+    let (whitelist_tx, _) = tokio::sync::broadcast::channel::<HashMap<String, HashMap<String, serde_json::Value>>>(16);
 
     // Фоновая задача: мониторинг белого списка в Redis
     let redis_config = config.redis.clone();
@@ -42,17 +52,14 @@ async fn main() -> anyhow::Result<()> {
         let redis_url = format!("redis://{}:{}", redis_config.host, redis_config.port);
         let client = redis::Client::open(redis_url).unwrap();
         let mut conn = client.get_multiplexed_async_connection().await.unwrap();
-        let mut last_whitelist = String::new();
 
         info!("Whitelist monitor started");
         loop {
+            // Читаем список монет из Redis
             if let Ok(json_str) = redis::AsyncCommands::get::<_, String>(&mut conn, "active_symbols_map").await {
-                if json_str != last_whitelist {
-                    if let Ok(map) = serde_json::from_str::<HashMap<String, Vec<String>>>(&json_str) {
-                        info!("New whitelist detected: {} symbols", map.len());
-                        let _ = wl_tx.send(map);
-                        last_whitelist = json_str;
-                    }
+                if let Ok(map) = serde_json::from_str::<HashMap<String, HashMap<String, serde_json::Value>>>(&json_str) {
+                    // Рассылаем вайтлист КАЖДЫЙ ТИК (раз в 10 сек), чтобы опоздавшие коллекторы его увидели
+                    let _ = wl_tx.send(map);
                 }
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
@@ -86,7 +93,24 @@ async fn main() -> anyhow::Result<()> {
         collector.run_dynamic(&mut okx_wl_rx).await;
     });
 
-    info!("Rust Core initialized. Binance, Bybit, and OKX collectors started.");
+    // Запуск MEXC Futures коллектора
+    let mexc_config = config.clone();
+    let mexc_engine = Arc::clone(&engine);
+    let mut mexc_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::mexc_futures::MexcFuturesCollector::new(mexc_config, mexc_engine);
+        collector.run_dynamic(&mut mexc_wl_rx).await;
+    });
+
+    // Запуск основного цикла аналитики (раз в секунду)
+    let tick_engine = Arc::clone(&engine);
+    tokio::spawn(async move {
+        if let Err(e) = tick_engine.start_tick_loop().await {
+            error!("Tick Engine error: {}", e);
+        }
+    });
+
+    info!("Rust Core initialized. Binance, Bybit, OKX and MEXC collectors started.");
     
     // Временная заглушка, чтобы main не завершался сразу
     tokio::signal::ctrl_c().await?;

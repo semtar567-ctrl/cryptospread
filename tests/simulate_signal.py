@@ -1,49 +1,73 @@
 import asyncio
 import json
+import time
 from redis.asyncio import Redis
 from telegram_bot.config import settings
 
-async def simulate_market_data():
-    """Скрипт для эмуляции прибыльного спреда в Redis, как если бы его нашел Rust."""
+async def simulate_custom_signal(duration=5, spread_percent=2.0, volume_usd=1000.0):
+    """
+    Эмуляция сигнала с заданными параметрами.
+    :param duration: сколько секунд поддерживать сигнал в Redis (для проверки Lifetime)
+    :param spread_percent: размер грязного спреда
+    :param volume_usd: рабочий объем для расчета VWAP
+    """
     redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
     
-    # Эмулируем стакан Binance (Покупка): Best Ask = 100
+    # Базовая цена
+    base_price = 100.0
+    # Цена покупки (Binance)
+    buy_price = base_price
+    # Цена продажи (Bybit) с учетом спреда
+    sell_price = base_price * (1 + spread_percent / 100)
+    
+    # Эмулируем стаканы с достаточной ликвидностью для 1000$
+    # На 100.0 лежит 20 монет = $2000 (хватает для $1000 без проскальзывания)
     buy_book = {
-        "asks": [[100.0, 10.0], [101.0, 20.0]], # VWAP на $2000 будет ~100.33
-        "bids": [[99.9, 10.0]]
+        "asks": [[buy_price, 20.0]], 
+        "bids": [[buy_price - 0.1, 20.0]]
     }
     
-    # Эмулируем стакан Bybit (Продажа): Best Bid = 105
+    # На 102.0 лежит 20 монет = $2040 (хватает для $1000)
     sell_book = {
-        "bids": [[105.0, 10.0], [104.0, 20.0]], # VWAP на $2000 будет ~104.66
-        "asks": [[105.1, 10.0]]
+        "bids": [[sell_price, 20.0]], 
+        "asks": [[sell_price + 0.1, 20.0]]
     }
     
-    # Формируем сигнал
+    # Генерируем таймстамп обнаружения (имитация Rust)
+    discovery_ts = int(time.time() * 1000)
+
     signal = {
         "symbol": "BTC/USDT",
-        # Имена бирж должны точно совпадать с тем, что хранится в БД пользователя (без _futures)
-        "buy_on": "binance",
-        "sell_on": "bybit",
-        "buy_price": 100.0,
-        "sell_price": 105.0,
-        "net_spread": 4.8, # Грубый спред
+        "buy_on": "mexc",
+        "sell_on": "okx",
+        "buy_price": buy_price,
+        "sell_price": sell_price,
+        "net_spread": spread_percent - 0.2, # Вычитаем комиссию (~0.1% на каждой стороне)
         "buy_book": buy_book,
         "sell_book": sell_book,
-        "timestamp": 123456789
+        "timestamp": discovery_ts
     }
+
+    if duration >= 3:
+        print(f"🚀 Запуск теста: Спред {spread_percent}%, Длительность {duration}с (Должен пройти фильтр 3с)")
+    else:
+        print(f"⚠️ Запуск теста: Спред {spread_percent}%, Длительность {duration}с (НЕ должен пройти фильтр 3с)")
+
+    start_time = time.time()
+    count = 0
+    while time.time() - start_time < duration:
+        # Обновляем таймстамп, чтобы сигнал не считался "протухшим"
+        signal["timestamp"] = int(time.time() * 1000)
+        await redis.xadd("market_signals", {"data": json.dumps(signal)})
+        count += 1
+        await asyncio.sleep(0.5) # Посылаем апдейты каждые 0.5 сек
     
-    print("🚀 Отправка первого тестового сигнала в Redis (для инициализации счетчика времени жизни)...")
-    await redis.xadd("market_signals", {"data": json.dumps(signal)})
-    
-    # Ждем 5 секунд (с запасом), чтобы гарантированно пройти фильтр в 3 секунды
-    print("⏳ Ждем 5 секунд...")
-    await asyncio.sleep(5)
-    
-    print("🚀 Отправка второго тестового сигнала в Redis (чтобы пройти фильтр времени жизни)...")
-    await redis.xadd("market_signals", {"data": json.dumps(signal)})
-    
-    print("✅ Сигналы отправлены. Проверь Telegram!")
+    print(f"✅ Тест завершен. Отправлено {count} обновлений.")
+
+async def main():
+    # Тест: Сигнал с участием MEXC (должен прийти в бот)
+    print("🚀 Запуск теста для MEXC...")
+    await simulate_custom_signal(duration=5, spread_percent=3.5, volume_usd=50)
 
 if __name__ == "__main__":
-    asyncio.run(simulate_market_data())
+    asyncio.run(main())
