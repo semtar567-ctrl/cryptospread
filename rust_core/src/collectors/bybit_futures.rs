@@ -13,8 +13,8 @@ use dashmap::DashMap;
 pub struct BybitFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., BTCUSDT) -> Unified (e.g., BTCUSDT)
-    id_map: DashMap<String, String>,
+    // Mapping: ExchangeID (e.g., BTCUSDT) -> (Unified (e.g., BTCUSDT), Taker Fee)
+    id_map: DashMap<String, (String, f64)>,
     // Хранилище полных стаканов: symbol -> (bids, asks)
     books: DashMap<String, (Vec<(f64, f64)>, Vec<(f64, f64)>)>,
     // Таймер для контрольного лога
@@ -70,7 +70,8 @@ impl BybitFuturesCollector {
                                 for (unified, mapping) in whitelist.iter() {
                                     if let Some(ex_info) = mapping.get("bybit") {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
-                                            new_id_map.insert(ex_id.to_string(), unified.clone());
+                                            let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
+                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee));
                                             new_ids.insert(ex_id.to_string());
                                         }
                                     }
@@ -149,8 +150,8 @@ impl BybitFuturesCollector {
 
         let bybit_id = topic.split('.').last().unwrap_or("unknown");
         
-        let unified_symbol = match self.id_map.get(bybit_id) {
-            Some(s) => s.clone(),
+        let (unified_symbol, taker_fee) = match self.id_map.get(bybit_id) {
+            Some(item) => item.value().clone(),
             None => return Ok(()),
         };
 
@@ -192,6 +193,7 @@ impl BybitFuturesCollector {
                     asks,
                     timestamp: v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0),
                     local_timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
+                    taker_fee,
                 };
                 self.engine.process_update(update).await?;
             }

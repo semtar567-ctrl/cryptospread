@@ -12,9 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct BinanceFuturesCollector {
     config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., btcusdt) -> Unified (e.g., BTCUSDT)
-    id_map: Mutex<HashMap<String, String>>,
+    // Mapping: ExchangeID (e.g., btcusdt) -> (Unified (e.g., BTCUSDT), Taker Fee)
+    id_map: Mutex<HashMap<String, (String, f64)>>,
 }
+
 
 impl BinanceFuturesCollector {
     pub fn new(config: AppConfig, engine: Arc<SpreadEngine>) -> Self {
@@ -65,7 +66,8 @@ impl BinanceFuturesCollector {
                                     if let Some(ex_info) = mapping.get("binance") {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
                                             let binance_stream_id = ex_id.to_lowercase();
-                                            new_id_map.insert(binance_stream_id.clone(), unified.clone());
+                                            let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
+                                            new_id_map.insert(binance_stream_id.clone(), (unified.clone(), fee));
                                             new_ids.insert(binance_stream_id);
                                         }
                                     }
@@ -133,12 +135,12 @@ impl BinanceFuturesCollector {
             if let Some(stream) = v.get("stream").and_then(|s| s.as_str()) {
                 let binance_id = stream.split('@').next().unwrap_or("unknown");
                 
-                let unified_symbol = {
+                let map_entry = {
                     let id_map = self.id_map.lock().unwrap();
                     id_map.get(binance_id).cloned()
                 };
 
-                if let Some(symbol) = unified_symbol {
+                if let Some((symbol, taker_fee)) = map_entry {
                     let bids = self.parse_levels(data.get("b").and_then(|b| b.as_array()));
                     let asks = self.parse_levels(data.get("a").and_then(|a| a.as_array()));
                     
@@ -149,6 +151,7 @@ impl BinanceFuturesCollector {
                         asks,
                         timestamp: data.get("E").and_then(|t| t.as_u64()).unwrap_or(0),
                         local_timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
+                        taker_fee,
                     };
 
                     if let Err(e) = self.engine.process_update(update).await {

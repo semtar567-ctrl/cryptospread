@@ -209,10 +209,17 @@ impl SpreadEngine {
     }
 
     fn calculate_vwap(layers: &[(f64, f64)], target_usd: f64) -> (f64, f64) {
+        if target_usd <= 0.0 {
+            return (0.0, 0.0);
+        }
+
         let mut total_usd = 0.0;
         let mut total_amount = 0.0;
 
-        for (price, amount) in layers {
+        for &(price, amount) in layers {
+            if price <= 0.0 || amount <= 0.0 {
+                continue;
+            }
             let layer_usd = price * amount;
             if total_usd + layer_usd >= target_usd {
                 let remaining_usd = target_usd - total_usd;
@@ -234,17 +241,6 @@ impl SpreadEngine {
     }
 
     async fn calculate_and_report(&self, symbol: &str, buy_ex: &str, sell_ex: &str, buy_price: f64, sell_price: f64, active_users: &[UserConfig]) -> anyhow::Result<()> {
-        let spread_raw = sell_price - buy_price;
-        let spread_percent = (spread_raw / buy_price) * 100.0;
-
-        let buy_fee = self.config.exchanges.get(&buy_ex.to_lowercase()).map(|e| e.taker_fee).unwrap_or(0.0006);
-        let sell_fee = self.config.exchanges.get(&sell_ex.to_lowercase()).map(|e| e.taker_fee).unwrap_or(0.0006);
-        let net_spread_percent = spread_percent - (buy_fee + sell_fee) * 100.0;
-
-        // РЕЖИМ ТОТАЛЬНОГО ЗРЕНИЯ: Показываем ВООБЩЕ ВСЕ расхождения цен для проверки
-        info!("🔍 RAW CHECK: {} ({} -> {}) | Spread: {:.4}%", 
-              symbol, buy_ex, sell_ex, net_spread_percent);
-
         let (buy_book, sell_book) = match self.state.get(symbol) {
             Some(symbol_data) => {
                 let b = symbol_data.get(&buy_ex.to_lowercase()).map(|u| u.clone());
@@ -256,6 +252,19 @@ impl SpreadEngine {
             }
             None => return Ok(()),
         };
+
+        let buy_fee = buy_book.taker_fee;
+        let sell_fee = sell_book.taker_fee;
+
+        let spread_raw = sell_price - buy_price;
+        let spread_percent = (spread_raw / buy_price) * 100.0;
+        
+        // Умножаем на 2.0 для полного круга сделки (открытие + закрытие)
+        let net_spread_percent = spread_percent - (buy_fee + sell_fee) * 2.0 * 100.0;
+
+        // РЕЖИМ ТОТАЛЬНОГО ЗРЕНИЯ: Показываем ВООБЩЕ ВСЕ расхождения цен в режиме отладки
+        debug!("🔍 RAW CHECK: {} ({} -> {}) | Spread: {:.4}%", 
+              symbol, buy_ex, sell_ex, net_spread_percent);
 
         let mut target_users = Vec::new();
         let mut user_metrics = HashMap::new();
@@ -278,7 +287,15 @@ impl SpreadEngine {
                 continue;
             }
 
-            if settings.filter_spread_enabled == 1 && net_spread_percent < settings.min_spread_percent {
+            let is_tracked = user.tracked_spreads.iter().any(|t| {
+                t.symbol.to_lowercase() == symbol.to_lowercase() &&
+                t.buy_exchange.to_lowercase() == buy_ex.to_lowercase() &&
+                t.sell_exchange.to_lowercase() == sell_ex.to_lowercase()
+            });
+
+            let skip_spread_filter = is_tracked;
+
+            if !skip_spread_filter && settings.filter_spread_enabled == 1 && net_spread_percent < settings.min_spread_percent {
                 if user.user_id == 655686738 {
                     debug!("User 655686738 skipped: Spread too low. Net: {:.4} < Min: {:.4}", 
                         net_spread_percent, settings.min_spread_percent);
@@ -294,22 +311,24 @@ impl SpreadEngine {
 
             if vwap_buy > 0.0 && vwap_sell > 0.0 {
                 let eff_spread_percent = ((vwap_sell - vwap_buy) / vwap_buy) * 100.0;
-                let eff_net_spread = eff_spread_percent - (buy_fee + sell_fee) * 100.0;
+                // Умножаем на 2.0 для полного круга сделки (открытие + закрытие)
+                let eff_net_spread = eff_spread_percent - (buy_fee + sell_fee) * 2.0 * 100.0;
                 slippage = net_spread_percent - eff_net_spread;
                 
                 // ВАЖНО: Решаем, по какой цене фильтровать
                 if settings.filter_slippage_enabled == 1 {
                     current_net_spread = eff_net_spread;
                 }
-            } else if settings.filter_slippage_enabled == 1 {
-                // Если объема нет и фильтр ВКЛ - скипаем
+            } else if settings.filter_slippage_enabled == 1 && !skip_spread_filter {
+                // Если объема нет и фильтр ВКЛ - скипаем (только если не отслеживаем)
                 continue;
             }
 
             // Основной фильтр по доходности (теперь либо по Best, либо по VWAP)
-            if settings.filter_spread_enabled == 1 && current_net_spread < settings.min_spread_percent {
+            if !skip_spread_filter && settings.filter_spread_enabled == 1 && current_net_spread < settings.min_spread_percent {
                 continue;
             }
+
 
             target_users.push(user.user_id);
             user_metrics.insert(user.user_id.to_string(), json!({
@@ -344,6 +363,8 @@ impl SpreadEngine {
                 "sell_on": sell_ex,
                 "buy_price": buy_price,
                 "sell_price": sell_price,
+                "buy_fee": buy_fee,
+                "sell_fee": sell_fee,
                 "net_spread": net_spread_percent,
                 "timestamp": chrono::Utc::now().timestamp_millis(),
                 "buy_book": { "bids": buy_book.bids, "asks": buy_book.asks },
@@ -409,6 +430,7 @@ mod tests {
             asks: vec![(50001.0, 1.0)],
             timestamp: 12345,
             local_timestamp: 12345,
+            taker_fee: 0.0006,
         };
 
         // Пишем данные (автоматическая конвертация в OrderBookState с is_dirty=true)
@@ -423,5 +445,79 @@ mod tests {
         assert_eq!(binance_data.bids[0].0, 50000.0);
         assert_eq!(binance_data.is_dirty, true);
         info!("✅ Unit test: Market State (OrderBookState) works correctly.");
+    }
+
+    #[test]
+    fn test_calculate_vwap() {
+        let asks = vec![(100.0, 2.0), (105.0, 4.0), (110.0, 10.0)];
+        let bids = vec![(95.0, 3.0), (90.0, 5.0), (85.0, 10.0)];
+        
+        let (vwap_buy, usd_buy) = SpreadEngine::calculate_vwap(&asks, 300.0);
+        let (vwap_sell, usd_sell) = SpreadEngine::calculate_vwap(&bids, 300.0);
+        
+        assert!((vwap_buy - 101.61290322580645).abs() < 1e-9, "vwap_buy actual: {}", vwap_buy);
+        assert!((usd_buy - 300.0).abs() < 1e-9);
+        
+        assert!((vwap_sell - 94.73684210526315).abs() < 1e-9, "vwap_sell actual: {}", vwap_sell);
+        assert!((usd_sell - 300.0).abs() < 1e-9);
+
+        // Расчет спредов и проскальзывания с использованием эталонных формул:
+        let buy_price = 100.0;
+        let sell_price = 95.0;
+        let buy_fee = 0.0006;
+        let sell_fee = 0.0006;
+
+        let spread_raw = sell_price - buy_price;
+        let spread_percent = (spread_raw / buy_price) * 100.0;
+        let net_spread_percent = spread_percent - (buy_fee + sell_fee) * 2.0 * 100.0;
+
+        let eff_spread_percent = ((vwap_sell - vwap_buy) / vwap_buy) * 100.0;
+        let eff_net_spread = eff_spread_percent - (buy_fee + sell_fee) * 2.0 * 100.0;
+        let slippage = net_spread_percent - eff_net_spread;
+
+        assert!((net_spread_percent - (-5.24)).abs() < 1e-9);
+        assert!((eff_net_spread - (-7.006917293233083)).abs() < 1e-9);
+        assert!((slippage - 1.766917293233083).abs() < 1e-9);
+
+        // Тестирование пограничных случаев (edge cases)
+        
+        // 1. Нулевой целевой объем
+        let (vwap_zero, usd_zero) = SpreadEngine::calculate_vwap(&asks, 0.0);
+        assert_eq!(vwap_zero, 0.0);
+        assert_eq!(usd_zero, 0.0);
+
+        // 2. Отрицательный целевой объем
+        let (vwap_neg, usd_neg) = SpreadEngine::calculate_vwap(&asks, -50.0);
+        assert_eq!(vwap_neg, 0.0);
+        assert_eq!(usd_neg, 0.0);
+
+        // 3. Пустой стакан ордеров
+        let empty_book: Vec<(f64, f64)> = vec![];
+        let (vwap_empty, usd_empty) = SpreadEngine::calculate_vwap(&empty_book, 300.0);
+        assert_eq!(vwap_empty, 0.0);
+        assert_eq!(usd_empty, 0.0);
+
+        // 4. Объем больше, чем суммарная ликвидность стакана
+        // Суммарная ликвидность asks: 2.0*100 + 4.0*105 + 10.0*110 = 200 + 420 + 1100 = 1720
+        let (vwap_huge, usd_huge) = SpreadEngine::calculate_vwap(&asks, 2000.0);
+        assert_eq!(vwap_huge, 0.0);
+        assert_eq!(usd_huge, 0.0);
+
+        // 5. Стакан с некорректными (нулевыми или отрицательными) ценами/объемами
+        let bad_book = vec![
+            (0.0, 5.0),
+            (-10.0, 1.0),
+            (100.0, -2.0),
+            (100.0, 2.0),  // Первый валидный слой: 200 USD
+            (105.0, 4.0),  // Второй валидный слой: 420 USD
+        ];
+        // Для объема 300 USD:
+        // Полностью поглощается первый слой (200 USD, 2.0 amount)
+        // Из второго слоя берется 100 USD (100 / 105 ≈ 0.95238095238 amount)
+        // Total amount = 2.95238095238
+        // VWAP = 300 / 2.95238095238 ≈ 101.6129032258
+        let (vwap_bad, usd_bad) = SpreadEngine::calculate_vwap(&bad_book, 300.0);
+        assert!((vwap_bad - 101.61290322580645).abs() < 1e-9);
+        assert!((usd_bad - 300.0).abs() < 1e-9);
     }
 }

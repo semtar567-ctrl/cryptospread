@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from telegram_bot.config import settings
 from telegram_bot.database.engine import AsyncSessionLocal
-from telegram_bot.database.models import User
+from telegram_bot.database.models import User, UserSetting, TrackedSpread
 from aiogram import Bot, types
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp.resolver import ThreadedResolver
@@ -109,7 +109,6 @@ class SignalEngine:
                 await asyncio.sleep(1)
 
     async def process_rust_signal(self, data):
-        # ... (начало метода без изменений)
         symbol = data["symbol"]
         buy_ex = data["buy_on"].lower()
         sell_ex = data["sell_on"].lower()
@@ -125,12 +124,6 @@ class SignalEngine:
             uid = int(uid_str)
             metrics = user_metrics.get(str(uid))
             if not metrics: continue
-
-            # 1. Анти-спам (Deduplication) - 60 секунд на одну и ту же связку для юзера
-            key = (symbol, buy_ex, sell_ex, uid)
-            if key in self.last_alert_sent:
-                if now - self.last_alert_sent[key] < 60:
-                    continue
 
             # 2. Мета-данные
             meta_key_buy = f"meta:{buy_ex}:{symbol.replace('/', '').replace('-', '')}"
@@ -151,7 +144,6 @@ class SignalEngine:
                     bm = json.loads(b_meta_raw)
                     funding_buy = bm.get("funding_rate", 0.0)
                     vol_24h_buy = bm.get("volume_24h", 0.0)
-                    # Новое поле: время следующего фандинга
                     next_f_buy = bm.get("next_funding_at")
                 except: pass
             
@@ -160,7 +152,6 @@ class SignalEngine:
                     sm = json.loads(s_meta_raw)
                     funding_sell = sm.get("funding_rate", 0.0)
                     vol_24h_sell = sm.get("volume_24h", 0.0)
-                    # Новое поле: время следующего фандинга
                     next_f_sell = sm.get("next_funding_at")
                 except: pass
 
@@ -171,66 +162,129 @@ class SignalEngine:
             vwap_buy = metrics.get("vwap_buy", 0.0)
             vwap_sell = metrics.get("vwap_sell", 0.0)
             slippage = metrics.get("slippage", 0.0)
-            net_spread = data["net_spread"]
-            eff_net_spread = net_spread - slippage
+            
+            buy_price = data["buy_price"]
+            sell_price = data["sell_price"]
+            b_fee = data.get("buy_fee", 0.0006)
+            s_fee = data.get("sell_fee", 0.0006)
+            
+            total_fee_percent = (b_fee + s_fee) * 2.0 * 100.0
+            raw_spread_percent = ((sell_price - buy_price) / buy_price) * 100.0
+            net_spread_after_fees = raw_spread_percent - total_fee_percent
+            vwap_net_spread = net_spread_after_fees - slippage
 
             signal_info = {
                 "symbol": symbol.replace("/", "").replace("-", ""), 
                 "buy_ex": buy_ex, 
                 "sell_ex": sell_ex,
-                "net_spread": net_spread,
-                "eff_net_spread": eff_net_spread,
-                # Фандинг спред: положительный - это доп. профит для нас
+                "total_fee": total_fee_percent,
+                "net_spread": net_spread_after_fees,
                 "funding_spread": (funding_sell - funding_buy) * 100.0,
                 "vol_usd": metrics.get("working_volume", 0),
-                "buy_price": vwap_buy if vwap_buy > 0 else data["buy_price"],
+                "vwap_net_spread": vwap_net_spread,
+                "buy_price": vwap_buy if vwap_buy > 0 else buy_price,
                 "buy_funding": funding_buy * 100, 
                 "buy_vol_24h": vol_24h_buy,
-                "buy_slip": slippage / 2,
+                "buy_slip": slippage / 2.0,
                 "buy_next_f": next_f_buy,
                 "buy_full": vwap_buy > 0,
-                "sell_price": vwap_sell if vwap_sell > 0 else data["sell_price"],
+                "sell_price": vwap_sell if vwap_sell > 0 else sell_price,
                 "sell_funding": funding_sell * 100, 
                 "sell_vol_24h": vol_24h_sell,
-                "sell_slip": slippage / 2,
+                "sell_slip": slippage / 2.0,
                 "sell_next_f": next_f_sell,
                 "sell_full": vwap_sell > 0,
                 "latency": latency_ms
             }
 
-            # Вместо прямой отправки добавляем в очередь
-            await self.queue_styled_alert(uid, signal_info)
-            self.last_alert_sent[key] = now
+            # Записываем спред в Redis для меню "Связки" с TTL 15 секунд
+            spread_key = f"current_spread:futures_futures:{symbol.replace('/', '').replace('-', '')}:{buy_ex}:{sell_ex}"
+            await self.redis.set(spread_key, json.dumps(signal_info), ex=15)
+
+            # Проверяем активные отслеживаемые спреды (схождение)
+            async with AsyncSessionLocal() as session:
+                stmt = select(TrackedSpread).where(
+                    TrackedSpread.user_id == uid,
+                    TrackedSpread.symbol == symbol.replace('/', '').replace('-', ''),
+                    TrackedSpread.buy_exchange == buy_ex,
+                    TrackedSpread.sell_exchange == sell_ex,
+                    TrackedSpread.is_active == True
+                )
+                result = await session.execute(stmt)
+                tracked_records = result.scalars().all()
+                
+                for record in tracked_records:
+                    if vwap_net_spread <= record.target_convergence:
+                        alert_msg = (
+                            f"🎯 **СХОЖДЕНИЕ СПРЕДА!**\n\n"
+                            f"🟦🟧 **{record.symbol}** (F/F)\n"
+                            f"↑ {record.buy_exchange.upper()} F. / ↓ {record.sell_exchange.upper()} F.\n\n"
+                            f"📈 **Спред сошелся до: {vwap_net_spread:.2f}%**\n"
+                            f"🎯 Цель схождения: {record.target_convergence:.2f}%\n"
+                            f"💰 Рабочий объем: ${metrics.get('working_volume', 0):g}\n\n"
+                            f"✅ **Связка отработала. Позицию можно закрывать!**"
+                        )
+                        await self.msg_queue.put((uid, alert_msg, None))
+                        
+                        record.is_active = False
+                        await session.commit()
+                        logger.info("Spread converged! Sent alert", symbol=record.symbol, user_id=uid)
+                        
+                        await self.redis.publish("user_updates", str(uid))
+
+            # Загружаем настройки пользователя из БД, чтобы проверить, нужно ли слать обычный алерт
+            async with AsyncSessionLocal() as session:
+                settings_stmt = select(UserSetting).where(UserSetting.user_id == uid, UserSetting.trade_type == "futures_futures")
+                settings_res = await session.execute(settings_stmt)
+                user_settings = settings_res.scalar_one_or_none()
+                
+                min_spread = user_settings.min_spread_percent if user_settings else 0.1
+                filter_spread_enabled = user_settings.filter_spread_enabled if user_settings else True
+
+            is_above_threshold = True
+            if filter_spread_enabled:
+                if vwap_net_spread < min_spread:
+                    is_above_threshold = False
+
+            if is_above_threshold:
+                # 1. Анти-спам (Deduplication) - 60 секунд на одну и ту же связку для юзера
+                key = (symbol, buy_ex, sell_ex, uid)
+                if key in self.last_alert_sent:
+                    if now - self.last_alert_sent[key] < 60:
+                        continue
+
+                await self.queue_styled_alert(uid, signal_info)
+                self.last_alert_sent[key] = now
 
     async def queue_styled_alert(self, user_id, s):
         """Формирует сообщение и кладет его в очередь на отправку."""
-        tv_symbol = f"BYBIT:{s['symbol']}.P/OKX:{s['symbol']}.P"
+        tv_symbol = f"{s['buy_ex'].upper()}:{s['symbol']}.P/{s['sell_ex'].upper()}:{s['symbol']}.P"
         tv_link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
         
-        warn_b = " ⚠️ Мало ликвидности" if not s["buy_full"] else ""
-        warn_s = " ⚠️ Мало ликвидности" if not s["sell_full"] else ""
+        warn_b = " ⚠️ Низкая ликвидность" if not s["buy_full"] else ""
+        warn_s = " ⚠️ Низкая ликвидность" if not s["sell_full"] else ""
 
         msg = (
             f"🟦🟧 **{s['symbol']}** (F/F)\n"
             f"↑ {s['buy_ex'].upper()} F. / ↓ {s['sell_ex'].upper()} F.\n\n"
-            f"📊 Чистый спред (Best): **{s['net_spread']:.2f}%**\n"
-            f"📈 Эфф. спред (VWAP): **{s['eff_net_spread']:.2f}%**\n"
-            f"💎 Фандинг Спред: {s['funding_spread']:.3f}%\n"
-            f"💰 Твой объем: ${s['vol_usd']:g}\n\n"
-            f"🟩 ЛОНГ НА ФЬЮЧЕРСЕ:\n"
+            f"🛠 **Комиссии:** {s['total_fee']:.3f}%\n"
+            f"📊 **Курсовой Спред:** {s['net_spread']:.2f}%\n"
+            f"💎 **Фандинг Спред:** {s['funding_spread']:.3f}%\n"
+            f"💰 **Объем:** ${s['vol_usd']:g}\n"
+            f"🚀 **Спред (VWAP):** **{s['vwap_net_spread']:.2f}%**\n\n"
+            f"🟩 **ЛОНГ НА ФЬЮЧЕРСЕ:**\n"
             f"[{s['buy_ex'].upper()}]({self._get_ex_link(s['buy_ex'], s['symbol'])})\n"
-            f"VWAP Цена: {s['buy_price']:.5f}\n"
+            f"Цена: {s['buy_price']:.5f}\n"
             f"Фандинг: {s['buy_funding']:.3f}% | {self._format_time_to_funding(s['buy_next_f'])}\n"
             f"Объем 24ч: ${s['buy_vol_24h']/1e6:.1f}M\n"
             f"Проскальзывание: {s['buy_slip']:.3f}%{warn_b}\n\n"
-            f"🟥 ШОРТ НА ФЬЮЧЕРСЕ:\n"
+            f"🟥 **ШОРТ НА ФЬЮЧЕРСЕ:**\n"
             f"[{s['sell_ex'].upper()}]({self._get_ex_link(s['sell_ex'], s['symbol'])})\n"
-            f"VWAP Цена: {s['sell_price']:.5f}\n"
+            f"Цена: {s['sell_price']:.5f}\n"
             f"Фандинг: {s['sell_funding']:.3f}% | {self._format_time_to_funding(s['sell_next_f'])}\n"
             f"Объем 24ч: ${s['sell_vol_24h']/1e6:.1f}M\n"
             f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
-            f"⏱ Задержка: {s['latency']}мс\n"
-            f"📈 [График спреда]({tv_link})\n"
+            f"📈 [График спреда]({tv_link})"
         )
         kb = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="🎯 Отслеживать схождение", callback_data=f"track_{s['symbol']}_{s['buy_ex']}_{s['sell_ex']}")]
@@ -248,12 +302,35 @@ class SignalEngine:
         }.get(exchange, "#")
 
     def _format_time_to_funding(self, ts_ms):
-        if not ts_ms: return "н/д"
+        if not ts_ms:
+            # Если время не пришло (напр. MEXC), рассчитываем ближайшее 00, 08, 16 UTC
+            from datetime import datetime, timedelta, timezone
+            now_utc = datetime.now(timezone.utc)
+            # Ближайший час кратный 8
+            target_hour = (now_utc.hour // 8 + 1) * 8
+            if target_hour >= 24:
+                target_dt = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            else:
+                target_dt = now_utc.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+            ts_sec = target_dt.timestamp()
+        else:
+            ts_sec = int(ts_ms) / 1000
+
         try:
-            d = (int(ts_ms) / 1000) - time.time()
-            if d < 0: return "сейчас"
-            return f"{int(d // 3600)}ч {int((d % 3600) // 60)}м"
-        except: return "н/д"
+            diff = ts_sec - time.time()
+            # Конвертируем в MSK (UTC+3)
+            from datetime import datetime, timedelta, timezone
+            dt_msk = datetime.fromtimestamp(ts_sec, timezone(timedelta(hours=3)))
+            time_str = dt_msk.strftime("%H:%M")
+            
+            if diff < 0: 
+                return f"{time_str} (сейчас)"
+            
+            hours = int(diff // 3600)
+            minutes = int((diff % 3600) // 60)
+            return f"{time_str} (через {hours}ч {minutes}м)"
+        except: 
+            return "н/д"
 
 async def main():
     await SignalEngine().run()

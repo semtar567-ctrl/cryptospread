@@ -9,14 +9,15 @@ def get_reply_main_menu(is_on: bool = False):
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-def get_trade_types_keyboard():
+def get_trade_types_keyboard(tracked_count: int = 0):
     """Главное инлайн-меню выбора типов торговли (как на скрине)."""
     buttons = [
-        [InlineKeyboardButton(text="🟢🔴 Спот/Фьючерс Внутрибирж", callback_data="trade_spot_futures_intra")],
-        [InlineKeyboardButton(text="🟢⚪ Спот/Фьючерс Межбирж", callback_data="trade_spot_futures_inter")],
-        [InlineKeyboardButton(text="🟦🟧 Фьючерс/Фьючерс Межбирж", callback_data="settings_futures_futures")],
-        [InlineKeyboardButton(text="🔹🔺 Арбитраж Фандинга", callback_data="trade_funding")],
-        [InlineKeyboardButton(text="🏛 Биржи:", callback_data="settings_exchanges")],
+        [InlineKeyboardButton(text="🟢 Спот/Фьючерс Внутрибирж", callback_data="trade_spot_futures_intra")],
+        [InlineKeyboardButton(text="🟢 Спот/Фьючерс Межбирж", callback_data="trade_spot_futures_inter")],
+        [InlineKeyboardButton(text="🟢 Фьючерс/Фьючерс Межбирж", callback_data="category_futures_futures")],
+        [InlineKeyboardButton(text="🔹 Арбитраж Фандинга (спред)", callback_data="trade_funding_spread")],
+        [InlineKeyboardButton(text="🔹 Арбитраж Фандинга (время)", callback_data="trade_funding_time")],
+        [InlineKeyboardButton(text=f"📍 Отслеживаемые: {tracked_count}", callback_data="show_tracked_list")],
         [InlineKeyboardButton(text="❓ Подсказка", callback_data="hint"), 
          InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")]
     ]
@@ -45,10 +46,10 @@ def get_futures_settings_keyboard(settings):
         [InlineKeyboardButton(text=get_on_off(settings.filter_volume_enabled), callback_data="toggle_filter_volume"),
          InlineKeyboardButton(text=f"🌐 >${settings.min_volume_24h:g}", callback_data="edit_volume")],
         
-        # Проскальзывание (мы заложили это в рабочий объем, но можем выделить отдельно если нужно)
-        [InlineKeyboardButton(text="📉 Проскальзывание:", callback_data="none")],
-        [InlineKeyboardButton(text="❌ OFF", callback_data="none"), # Заглушка пока расчет внутри рабочего объема
-         InlineKeyboardButton(text="🌐 <0.1%", callback_data="none")],
+        # Проскальзывание
+        [InlineKeyboardButton(text="📉 Проскальзывание (VWAP):", callback_data="none")],
+        [InlineKeyboardButton(text=get_on_off(settings.filter_slippage_enabled), callback_data="toggle_filter_slippage"),
+         InlineKeyboardButton(text="🌐 <0.1% (Limit)", callback_data="placeholder")],
         
         # Время жизни
         [InlineKeyboardButton(text="🕒 Время жизни:", callback_data="none")],

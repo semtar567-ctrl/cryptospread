@@ -13,11 +13,12 @@ use dashmap::DashMap;
 pub struct OkxFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., BTC-USDT-SWAP) -> Unified (e.g., BTCUSDT)
-    id_map: DashMap<String, String>,
+    // Mapping: ExchangeID (e.g., BTC-USDT-SWAP) -> (Unified (e.g., BTCUSDT), Taker Fee)
+    id_map: DashMap<String, (String, f64)>,
     // Таймер для контрольного лога
     last_log_time: DashMap<String, Instant>,
 }
+
 
 impl OkxFuturesCollector {
     pub fn new(config: AppConfig, engine: Arc<SpreadEngine>) -> Self {
@@ -68,7 +69,8 @@ impl OkxFuturesCollector {
                                 for (unified, mapping) in whitelist.iter() {
                                     if let Some(ex_info) = mapping.get("okx") {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
-                                            new_id_map.insert(ex_id.to_string(), unified.clone());
+                                            let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
+                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee));
                                             new_ids.insert(ex_id.to_string());
                                         }
                                     }
@@ -142,8 +144,8 @@ impl OkxFuturesCollector {
         if let Some(arg) = v.get("arg") {
             if arg.get("channel").and_then(|c| c.as_str()) == Some("books5") {
                 if let Some(inst_id) = arg.get("instId").and_then(|i| i.as_str()) {
-                    let unified_symbol = match self.id_map.get(inst_id) {
-                        Some(s) => s.clone(),
+                    let (unified_symbol, taker_fee) = match self.id_map.get(inst_id) {
+                        Some(item) => item.value().clone(),
                         None => return Ok(()),
                     };
 
@@ -170,6 +172,7 @@ impl OkxFuturesCollector {
                                     asks,
                                     timestamp: data.get("ts").and_then(|t| t.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0),
                                     local_timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
+                                    taker_fee,
                                 };
 
                                 self.engine.process_update(update).await?;

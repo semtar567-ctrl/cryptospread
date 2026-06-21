@@ -8,6 +8,7 @@ pub struct OrderBookUpdate {
     pub asks: Vec<(f64, f64)>, // (price, amount)
     pub timestamp: u64,        // Exchange timestamp
     pub local_timestamp: u64,  // System arrival timestamp
+    pub taker_fee: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -18,6 +19,7 @@ pub struct OrderBookState {
     pub asks: Vec<(f64, f64)>,
     pub timestamp: u64,
     pub local_timestamp: u64,
+    pub taker_fee: f64,
     pub is_dirty: bool, // Флаг изменения для Tick Loop
 }
 
@@ -30,10 +32,12 @@ impl From<OrderBookUpdate> for OrderBookState {
             asks: update.asks,
             timestamp: update.timestamp,
             local_timestamp: update.local_timestamp,
+            taker_fee: update.taker_fee,
             is_dirty: true, // При создании из обновления всегда помечаем как "грязный"
         }
     }
 }
+
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct UserTradeSettings {
@@ -49,9 +53,18 @@ pub struct UserTradeSettings {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TrackedSpreadConfig {
+    pub symbol: String,
+    pub buy_exchange: String,
+    pub sell_exchange: String,
+    pub target_convergence: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserConfig {
     pub user_id: i64,
     pub is_active: bool,
     pub futures_settings: Option<UserTradeSettings>,
     pub enabled_exchanges: Vec<String>,
+    pub tracked_spreads: Vec<TrackedSpreadConfig>,
 }

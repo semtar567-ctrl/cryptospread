@@ -53,13 +53,33 @@ class MetaMonitor:
             # Получаем фандинг (опционально, если биржа поддерживает)
             funding_rates = {}
             next_funding_times = {}
-            try:
-                funding_data = await exchange.fetch_funding_rates()
-                for symbol, data in funding_data.items():
-                    funding_rates[symbol] = data.get("fundingRate", 0)
-                    next_funding_times[symbol] = data.get("nextFundingTimestamp")
-            except:
-                logger.warn(f"Could not fetch funding rates for {exchange_id}")
+            
+            # 1. Сначала пробуем вытащить фандинг из тикеров (самый быстрый и надежный способ для Bybit/MEXC)
+            for symbol, ticker in tickers.items():
+                try:
+                    info = ticker.get("info", {})
+                    # Bybit & MEXC & OKX часто кладут fundingRate в info тикера
+                    fr = info.get("fundingRate") or info.get("lastFundingRate")
+                    if fr is not None:
+                        funding_rates[symbol] = float(fr)
+                    
+                    # Время следующего фандинга
+                    nft = info.get("nextFundingTime") or info.get("nextSettleTime")
+                    if nft:
+                        next_funding_times[symbol] = int(nft)
+                except: pass
+
+            # 2. Если данных мало, пробуем специализированный метод (для Binance/OKX)
+            if exchange_id in ["binance", "okx"]:
+                try:
+                    funding_data = await exchange.fetch_funding_rates()
+                    for symbol, data in funding_data.items():
+                        if symbol not in funding_rates:
+                            funding_rates[symbol] = data.get("fundingRate", 0)
+                        if symbol not in next_funding_times:
+                            next_funding_times[symbol] = data.get("nextFundingTimestamp")
+                except:
+                    logger.warn(f"Could not fetch bulk funding rates for {exchange_id}")
 
             results = {}
             for symbol, market in markets.items():
@@ -87,7 +107,8 @@ class MetaMonitor:
                     "volume_24h": quote_vol,
                     "funding_rate": funding_rates.get(symbol, 0),
                     "next_funding_at": next_funding_times.get(symbol),
-                    "last_price": ticker.get("last", 0)
+                    "last_price": ticker.get("last", 0),
+                    "taker_fee": market.get("taker") if market.get("taker") is not None else 0.0006
                 }
                 
                 # Обновляем мета-данные в Redis немедленно для каждого инструмента
@@ -140,10 +161,13 @@ class MetaMonitor:
                 final_whitelist = {}
                 for unified, exs in symbol_to_exchanges.items():
                     if len(exs) >= 2:
-                        # Собираем точные ID для каждой биржи
+                        # Собираем точные ID и комиссии для каждой биржи
                         ex_mappings = {}
                         for ex_id in exs:
-                            ex_mappings[ex_id] = full_map[unified][ex_id]["exchange_id_symbol"]
+                            ex_mappings[ex_id] = {
+                                "id": full_map[unified][ex_id]["exchange_id_symbol"],
+                                "fee": full_map[unified][ex_id]["taker_fee"]
+                            }
                             
                             # Сохраняем мета-данные (фандинг и т.д.)
                             meta_key = f"meta:{ex_id}:{unified}"

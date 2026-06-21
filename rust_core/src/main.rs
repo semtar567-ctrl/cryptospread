@@ -13,8 +13,10 @@ use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Инициализация логгера
-    tracing_subscriber::fmt::init();
+    // Инициализация логгера с фильтрацией: ошибки и предупреждения для всех, инфо для нашего ядра
+    tracing_subscriber::fmt()
+        .with_env_filter("error,rust_core=info")
+        .init();
     
     info!("Starting CryptoSpread Rust Core...");
 

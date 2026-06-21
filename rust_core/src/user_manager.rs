@@ -1,4 +1,4 @@
-use crate::models::{UserConfig, UserTradeSettings};
+use crate::models::{UserConfig, UserTradeSettings, TrackedSpreadConfig};
 use sqlx::{postgres::PgPool, Row};
 use anyhow::Result;
 
@@ -56,6 +56,24 @@ impl UserManager {
                 .map(|r| r.get::<String, _>("exchange_id"))
                 .collect();
 
+            // Получаем список отслеживаемых спредов для пользователя
+            let tracked_rows = sqlx::query(
+                "SELECT symbol, buy_exchange, sell_exchange, target_convergence::float8 as target_convergence FROM tracked_spreads WHERE user_id = $1 AND is_active = true"
+            )
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+            let tracked_spreads = tracked_rows
+                .into_iter()
+                .map(|r| TrackedSpreadConfig {
+                    symbol: r.get::<String, _>("symbol"),
+                    buy_exchange: r.get::<String, _>("buy_exchange"),
+                    sell_exchange: r.get::<String, _>("sell_exchange"),
+                    target_convergence: r.get::<Option<f64>, _>("target_convergence").unwrap_or(0.05),
+                })
+                .collect();
+
             configs.push(UserConfig {
                 user_id,
                 is_active,
@@ -71,6 +89,7 @@ impl UserManager {
                     filter_lifetime_enabled: if row.get::<Option<bool>, _>("filter_lifetime_enabled").unwrap_or(true) { 1 } else { 0 },
                 }),
                 enabled_exchanges,
+                tracked_spreads,
             });
         }
 
