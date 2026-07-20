@@ -20,7 +20,8 @@ from aiogram.filters import Command
 from telegram_bot.config import settings
 from telegram_bot.database.engine import init_db, AsyncSessionLocal
 from telegram_bot.database.models import User, UserSetting, UserExchange, TrackedSpread
-from telegram_bot.utils.keyboards import get_reply_main_menu, get_trade_types_keyboard, get_futures_settings_keyboard, get_exchanges_keyboard
+from telegram_bot.utils.keyboards import get_reply_main_menu, get_trade_types_keyboard, get_futures_settings_keyboard, get_exchanges_keyboard, get_spreads_types_keyboard
+from telegram_bot.utils.redis_sync import sync_user_settings_to_redis, sync_all_users_to_redis
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -37,7 +38,7 @@ async def spreads_button_handler(message: types.Message):
         await message.answer(
             "⚠️ **СВЯЗКИ**\n\nЗдесь можно посмотреть актуальные связки по выбранному типу сигналов.",
             parse_mode="Markdown",
-            reply_markup=get_trade_types_keyboard(tracked_count)
+            reply_markup=get_spreads_types_keyboard(tracked_count)
         )
 
 async def show_categories_callback(callback: types.CallbackQuery):
@@ -49,7 +50,7 @@ async def show_categories_callback(callback: types.CallbackQuery):
         await callback.message.edit_text(
             "⚠️ **СВЯЗКИ**\n\nЗдесь можно посмотреть актуальные связки по выбранному типу сигналов.",
             parse_mode="Markdown",
-            reply_markup=get_trade_types_keyboard(tracked_count)
+            reply_markup=get_spreads_types_keyboard(tracked_count)
         )
 
 async def category_futures_futures_callback(callback: types.CallbackQuery):
@@ -255,12 +256,11 @@ async def set_convergence_val_callback(callback: types.CallbackQuery):
         
         await session.commit()
         
-        from telegram_bot.utils.redis_sync import sync_user_settings_to_redis
         await sync_user_settings_to_redis(callback.from_user.id, session)
         
         await callback.answer(f"🚀 Начал отслеживание {symbol}!\nУведомление придет при сходе до {val}%.", show_alert=True)
         
-        callback.data = f"show_spread_futures_futures_{symbol}_{buy_ex}_{sell_ex}"
+        callback = callback.model_copy(update={"data": f"show_spread_futures_futures_{symbol}_{buy_ex}_{sell_ex}"})
         await show_spread_details_callback(callback)
 
 async def set_convergence_manual_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -366,7 +366,6 @@ async def untrack_spread_callback(callback: types.CallbackQuery):
             record.is_active = False
             await session.commit()
             
-            from telegram_bot.utils.redis_sync import sync_user_settings_to_redis
             await sync_user_settings_to_redis(callback.from_user.id, session)
             
             await callback.answer("🗑 Связка удалена из отслеживания.", show_alert=True)
@@ -507,8 +506,6 @@ async def placeholder_callback(callback: types.CallbackQuery):
 
 # FSM imports moved to top
 
-from telegram_bot.utils.redis_sync import sync_user_settings_to_redis, sync_all_users_to_redis
-
 # ... (start_command, menu_button_handler, profile_button_handler без изменений)
 
 # Хендлеры начала редактирования (FSM)
@@ -575,7 +572,6 @@ async def process_numeric_input(message: types.Message, state: FSMContext):
             
             await session.commit()
             
-            from telegram_bot.utils.redis_sync import sync_user_settings_to_redis
             await sync_user_settings_to_redis(message.from_user.id, session)
             
             # Считаем количество активных отслеживаемых

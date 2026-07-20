@@ -37,6 +37,7 @@ impl BinanceFuturesCollector {
             match connect_async(url).await {
                 Ok((mut ws_stream, _)) => {
                     info!("Connected to Binance Futures");
+                    current_ids.clear();
 
                     loop {
                         tokio::select! {
@@ -92,27 +93,22 @@ impl BinanceFuturesCollector {
 
                                 if !to_subscribe.is_empty() {
                                     info!("Binance: Subscribing to {} new streams", to_subscribe.len());
-                                    // Binance позволяет подписываться пачками
-                                    for chunk in to_subscribe.chunks(10) {
-                                        let sub_msg = serde_json::json!({
-                                            "method": "SUBSCRIBE",
-                                            "params": chunk,
-                                            "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
-                                        });
-                                        let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
-                                    }
+                                    let sub_msg = serde_json::json!({
+                                        "method": "SUBSCRIBE",
+                                        "params": to_subscribe,
+                                        "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+                                    });
+                                    let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
                                 }
 
                                 if !to_unsubscribe.is_empty() {
                                     info!("Binance: Unsubscribing from {} streams", to_unsubscribe.len());
-                                    for chunk in to_unsubscribe.chunks(10) {
-                                        let unsub_msg = serde_json::json!({
-                                            "method": "UNSUBSCRIBE",
-                                            "params": chunk,
-                                            "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 1
-                                        });
-                                        let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
-                                    }
+                                    let unsub_msg = serde_json::json!({
+                                        "method": "UNSUBSCRIBE",
+                                        "params": to_unsubscribe,
+                                        "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 1
+                                    });
+                                    let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
                                 }
 
                                 current_ids = new_ids;

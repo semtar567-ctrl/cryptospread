@@ -12,11 +12,25 @@ def get_reply_main_menu(is_on: bool = False):
 def get_trade_types_keyboard(tracked_count: int = 0):
     """Главное инлайн-меню выбора типов торговли (как на скрине)."""
     buttons = [
-        [InlineKeyboardButton(text="🟢 Спот/Фьючерс Внутрибирж", callback_data="trade_spot_futures_intra")],
-        [InlineKeyboardButton(text="🟢 Спот/Фьючерс Межбирж", callback_data="trade_spot_futures_inter")],
-        [InlineKeyboardButton(text="🟢 Фьючерс/Фьючерс Межбирж", callback_data="category_futures_futures")],
-        [InlineKeyboardButton(text="🔹 Арбитраж Фандинга (спред)", callback_data="trade_funding_spread")],
-        [InlineKeyboardButton(text="🔹 Арбитраж Фандинга (время)", callback_data="trade_funding_time")],
+        [InlineKeyboardButton(text="🟢🔴 Спот/Фьючерс Внутрибирж", callback_data="trade_spot_futures_intra")],
+        [InlineKeyboardButton(text="🟢⚪ Спот/Фьючерс Межбирж", callback_data="trade_spot_futures_inter")],
+        [InlineKeyboardButton(text="🟦🟧 Фьючерс/Фьючерс Межбирж", callback_data="settings_futures_futures")],
+        [InlineKeyboardButton(text="🔹🔺 Арбитраж Фандинга", callback_data="trade_funding")],
+        [InlineKeyboardButton(text="🏛 Биржи:", callback_data="settings_exchanges")],
+        [InlineKeyboardButton(text=f"📍 Отслеживаемые: {tracked_count}", callback_data="show_tracked_list")],
+        [InlineKeyboardButton(text="❓ Подсказка", callback_data="hint"), 
+         InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_spreads_types_keyboard(tracked_count: int = 0):
+    """Главное инлайн-меню выбора типов торговли для просмотра связок."""
+    buttons = [
+        [InlineKeyboardButton(text="🟢🔴 Спот/Фьючерс Внутрибирж", callback_data="trade_spot_futures_intra")],
+        [InlineKeyboardButton(text="🟢⚪ Спот/Фьючерс Межбирж", callback_data="trade_spot_futures_inter")],
+        [InlineKeyboardButton(text="🟦🟧 Фьючерс/Фьючерс Межбирж", callback_data="category_futures_futures")],
+        [InlineKeyboardButton(text="🔹🔺 Арбитраж Фандинга", callback_data="trade_funding")],
+        [InlineKeyboardButton(text="🏛 Биржи:", callback_data="settings_exchanges")],
         [InlineKeyboardButton(text=f"📍 Отслеживаемые: {tracked_count}", callback_data="show_tracked_list")],
         [InlineKeyboardButton(text="❓ Подсказка", callback_data="hint"), 
          InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")]
@@ -70,5 +84,29 @@ def get_exchanges_keyboard(user_exchanges):
         status = "✅" if ex.is_enabled else "❌"
         buttons.append([InlineKeyboardButton(text=f"{status} {ex.exchange_id.capitalize()}", callback_data=f"toggle_ex_{ex.exchange_id}")])
     
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_futures_menu_keyboard():
+    """Промежуточное меню управления фьючерсным арбитражем."""
+    buttons = [
+        [InlineKeyboardButton(text="🔔 Посмотреть связки", callback_data="category_futures_futures")],
+        [InlineKeyboardButton(text="⚙️ Настройки фильтров", callback_data="settings_futures_futures")],
+        [InlineKeyboardButton(text="🏛 Выбор бирж", callback_data="settings_exchanges")],
+        [InlineKeyboardButton(text="🚫 Черный список", callback_data="settings_blacklist")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu"),
+         InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_blacklist_keyboard(blacklist_items):
+    """Меню черного списка монет."""
+    buttons = []
+    for item in blacklist_items:
+        buttons.append([
+            InlineKeyboardButton(text=f"🚫 {item.symbol}", callback_data="none"),
+            InlineKeyboardButton(text="❌ Удалить", callback_data=f"remove_bl_{item.id}")
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ Добавить монету", callback_data="add_to_blacklist")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)

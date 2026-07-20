@@ -16,6 +16,7 @@ class User(Base):
 
     settings: Mapped[list["UserSetting"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     exchanges: Mapped[list["UserExchange"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    blacklist: Mapped[list["UserBlacklist"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 class UserSetting(Base):
     __tablename__ = "user_settings"
@@ -58,3 +59,12 @@ class TrackedSpread(Base):
     target_convergence: Mapped[float] = mapped_column(Float, default=0.05)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+class UserBlacklist(Base):
+    __tablename__ = "user_blacklist"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.user_id"))
+    symbol: Mapped[str] = mapped_column(String)
+
+    user: Mapped["User"] = relationship(back_populates="blacklist")
