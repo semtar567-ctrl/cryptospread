@@ -34,18 +34,30 @@ class MetaMonitor:
             "binance": ccxt.binance({"options": {"defaultType": "future"}}),
             "bybit": ccxt.bybit({"options": {"defaultType": "future"}}),
             "okx": ccxt.okx({"options": {"defaultType": "swap"}}),
-            "mexc": ccxt.mexc({"options": {"defaultType": "swap"}})
+            "mexc": ccxt.mexc({"options": {"defaultType": "swap"}}),
+            "bitget": ccxt.bitget({"options": {"defaultType": "swap"}}),
+            "gateio": ccxt.gateio({"options": {"defaultType": "swap"}}),
+            "bingx": ccxt.bingx({"options": {"defaultType": "swap"}}),
+            "kucoinfutures": ccxt.kucoinfutures({"options": {"defaultType": "swap"}}),
+            "hyperliquid": None,
+            "asterdex": None,
+            "bitmart": ccxt.bitmart({"options": {"defaultType": "swap"}})
         }
         
     async def init_sessions(self):
         for ex in self.exchanges.values():
-            ex.session = get_custom_session()
+            if ex is not None:
+                ex.session = get_custom_session()
 
     async def fetch_exchange_meta(self, exchange_id, exchange):
         """
         Загружает рынки и фильтрует только бессрочные фьючерсы (Swaps).
         Возвращает: { unified_symbol: { "id": exchange_id_symbol, "vol": 24h_vol, "funding": rate } }
         """
+        if exchange_id == "hyperliquid":
+            return await self.fetch_hyperliquid_meta()
+        if exchange_id == "asterdex":
+            return await self.fetch_asterdex_meta()
         try:
             markets = await exchange.load_markets()
             tickers = await exchange.fetch_tickers()
@@ -90,9 +102,37 @@ class MetaMonitor:
                 if not market.get("swap"): continue
                 if market.get("settle") not in ["USDT", "USDC"]: continue
                 if not market.get("active"): continue
+
+                # 4. Исключаем Pre-Market, Pre-IPO, RWA (акции), TradFi и не-бессрочные контракты
+                info = market.get("info", {})
+                u_type = str(info.get("underlyingType", "")).upper()
+                s_type = str(info.get("symbolType", "")).upper()
+                if u_type in ["PREMARKET", "EQUITY", "STOCK"] or s_type in ["STOCK", "STOCKS"] or info.get("isPreMarket") is True or info.get("isRwa") == "YES": continue
+                c_type = (str(info.get("contractType", "")) + " " + str(info.get("contract_type", ""))).upper()
+                if "TRADIFI" in c_type or "STOCK" in c_type or "QUARTER" in c_type or "DELIVERY" in c_type: continue
                 
-                # Приводим к единому формату BTCUSDT
-                unified = symbol.split(":")[0].replace("/", "")
+                # Нормализация символа и вычисление префиксного мультипликатора контракта
+                raw_base = symbol.split(":")[0].split("/")[0].upper()
+                
+                prefix_mult = 1.0
+                matched_prefix = None
+                known_prefix_memes = {"PEPE", "BONK", "SATS", "MOG", "BABYDOGE", "CHEEMS", "MUU", "CAT", "NEX", "FLOKI", "SHIB"}
+
+                for prefix in ["1000000", "10000", "1000"]:
+                    if raw_base.startswith(prefix) and len(raw_base) > len(prefix):
+                        prefix_mult = float(prefix)
+                        matched_prefix = prefix
+                        break
+
+                if matched_prefix:
+                    unified = f"{raw_base}USDT"
+                elif raw_base in known_prefix_memes:
+                    prefix_key = "1000000" if raw_base in ["MOG", "BABYDOGE", "MUU"] else "1000"
+                    unified = f"{prefix_key}{raw_base}USDT"
+                else:
+                    unified = f"{raw_base}USDT"
+
+                total_multiplier = prefix_mult
                 
                 # Получаем объем из тикера
                 ticker = tickers.get(symbol, {})
@@ -108,7 +148,9 @@ class MetaMonitor:
                     "funding_rate": funding_rates.get(symbol, 0),
                     "next_funding_at": next_funding_times.get(symbol),
                     "last_price": ticker.get("last", 0),
-                    "taker_fee": market.get("taker") if market.get("taker") is not None else 0.0006
+                    "taker_fee": market.get("taker") if market.get("taker") is not None else 0.0006,
+                    "multiplier": total_multiplier,
+                    "contract_size": float(market.get("contractSize") or 1.0)
                 }
                 
                 # Обновляем мета-данные в Redis немедленно для каждого инструмента
@@ -120,6 +162,183 @@ class MetaMonitor:
             return results
         except Exception as e:
             logger.error(f"Error fetching meta from {exchange_id}", error=str(e))
+            return {}
+
+    async def fetch_hyperliquid_meta(self):
+        """
+        Загружает мета-данные бессрочных фьючерсов Hyperliquid напрямую из REST API:
+        https://api.hyperliquid.xyz/info payload: {"type": "metaAndAssetCtxs"}
+        """
+        url = "https://api.hyperliquid.xyz/info"
+        headers = {"Content-Type": "application/json"}
+        payload = {"type": "metaAndAssetCtxs"}
+
+        try:
+            async with get_custom_session() as session:
+                async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Hyperliquid API error status: {resp.status}")
+                        return {}
+                    data = await resp.json()
+
+            if not isinstance(data, list) or len(data) < 2:
+                logger.error("Invalid response format from Hyperliquid info endpoint")
+                return {}
+
+            universe = data[0].get("universe", [])
+            asset_ctxs = data[1]
+
+            known_prefix_memes = {"PEPE", "BONK", "SATS", "MOG", "BABYDOGE", "CHEEMS", "MUU", "CAT", "NEX", "FLOKI", "SHIB"}
+
+            results = {}
+            for idx, asset in enumerate(universe):
+                coin = asset.get("name")
+                if not coin or idx >= len(asset_ctxs):
+                    continue
+
+                ctx = asset_ctxs[idx]
+                volume_24h = float(ctx.get("dayNtlVlm", 0) or 0)
+                funding_rate = float(ctx.get("funding", 0) or 0)
+                last_price = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx") or 0)
+
+                raw_coin = coin.upper()
+                prefix_mult = 1.0
+                matched_prefix = None
+
+                # Обработка префикса 'k' на Hyperliquid (kPEPE -> 1000PEPE)
+                if raw_coin.startswith("K") and len(raw_coin) > 1 and raw_coin[1:] in known_prefix_memes:
+                    raw_base = f"1000{raw_coin[1:]}"
+                    prefix_mult = 1000.0
+                    matched_prefix = "1000"
+                else:
+                    raw_base = raw_coin
+
+                for prefix in ["1000000", "10000", "1000"]:
+                    if raw_base.startswith(prefix) and len(raw_base) > len(prefix):
+                        prefix_mult = float(prefix)
+                        matched_prefix = prefix
+                        break
+
+                if matched_prefix:
+                    unified = f"{raw_base}USDT"
+                elif raw_base in known_prefix_memes:
+                    prefix_key = "1000000" if raw_base in ["MOG", "BABYDOGE", "MUU"] else "1000"
+                    unified = f"{prefix_key}{raw_base}USDT"
+                else:
+                    unified = f"{raw_base}USDT"
+
+                results[unified] = {
+                    "exchange_id_symbol": coin,
+                    "volume_24h": volume_24h,
+                    "funding_rate": funding_rate,
+                    "next_funding_at": None,
+                    "last_price": last_price,
+                    "taker_fee": 0.00035,
+                    "multiplier": prefix_mult,
+                    "contract_size": 1.0
+                }
+
+            logger.info(f"Fetched {len(results)} swaps from hyperliquid")
+            return results
+
+        except Exception as e:
+            logger.error("Error fetching meta from hyperliquid", error=str(e))
+            return {}
+
+    async def fetch_asterdex_meta(self):
+        """
+        Загружает мета-данные бессрочных фьючерсов Aster DEX напрямую из REST API:
+        https://fapi.asterdex.com/fapi/v1/ticker/24hr
+        https://fapi.asterdex.com/fapi/v1/premiumIndex
+        """
+        ticker_url = "https://fapi.asterdex.com/fapi/v1/ticker/24hr"
+        funding_url = "https://fapi.asterdex.com/fapi/v1/premiumIndex"
+
+        try:
+            async with get_custom_session() as session:
+                async with session.get(ticker_url, timeout=10) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Aster DEX ticker API error status: {resp.status}")
+                        return {}
+                    tickers_data = await resp.json()
+
+                funding_map = {}
+                next_funding_map = {}
+                async with session.get(funding_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        funding_data = await resp.json()
+                        if isinstance(funding_data, list):
+                            for item in funding_data:
+                                sym = item.get("symbol")
+                                if sym:
+                                    fr = item.get("lastFundingRate")
+                                    nft = item.get("nextFundingTime")
+                                    if fr is not None:
+                                        funding_map[sym] = float(fr)
+                                    if nft:
+                                        next_funding_map[sym] = int(nft)
+                        elif isinstance(funding_data, dict):
+                            sym = funding_data.get("symbol")
+                            if sym:
+                                fr = funding_data.get("lastFundingRate")
+                                nft = funding_data.get("nextFundingTime")
+                                if fr is not None:
+                                    funding_map[sym] = float(fr)
+                                if nft:
+                                    next_funding_map[sym] = int(nft)
+
+            if not isinstance(tickers_data, list):
+                if isinstance(tickers_data, dict):
+                    tickers_data = [tickers_data]
+                else:
+                    logger.error("Invalid response format from Aster DEX ticker endpoint")
+                    return {}
+
+            known_prefix_memes = {"PEPE", "BONK", "SATS", "MOG", "BABYDOGE", "CHEEMS", "MUU", "CAT", "NEX", "FLOKI", "SHIB"}
+
+            results = {}
+            for item in tickers_data:
+                symbol = item.get("symbol")
+                if not symbol or not symbol.endswith("USDT"):
+                    continue
+
+                quote_vol = float(item.get("quoteVolume", 0) or 0)
+                last_price = float(item.get("lastPrice") or item.get("last_price") or 0)
+
+                raw_base = symbol[:-4].upper()
+                prefix_mult = 1.0
+                matched_prefix = None
+
+                for prefix in ["1000000", "10000", "1000"]:
+                    if raw_base.startswith(prefix) and len(raw_base) > len(prefix):
+                        prefix_mult = float(prefix)
+                        matched_prefix = prefix
+                        break
+
+                if matched_prefix:
+                    unified = f"{raw_base}USDT"
+                elif raw_base in known_prefix_memes:
+                    prefix_key = "1000000" if raw_base in ["MOG", "BABYDOGE", "MUU"] else "1000"
+                    unified = f"{prefix_key}{raw_base}USDT"
+                else:
+                    unified = f"{raw_base}USDT"
+
+                results[unified] = {
+                    "exchange_id_symbol": symbol,
+                    "volume_24h": quote_vol,
+                    "funding_rate": funding_map.get(symbol, 0.0),
+                    "next_funding_at": next_funding_map.get(symbol),
+                    "last_price": last_price,
+                    "taker_fee": 0.0004,
+                    "multiplier": prefix_mult,
+                    "contract_size": 1.0
+                }
+
+            logger.info(f"Fetched {len(results)} swaps from asterdex")
+            return results
+
+        except Exception as e:
+            logger.error("Error fetching meta from asterdex", error=str(e))
             return {}
 
     async def update_all(self):
@@ -160,13 +379,24 @@ class MetaMonitor:
                 # 3. Формируем финальный Whitelist (только те, что на 2+ биржах)
                 final_whitelist = {}
                 for unified, exs in symbol_to_exchanges.items():
+                    # Защита от коллизий тикеров: очистка бирж-выбросов по медианной цене
+                    valid_prices = [full_map[unified][ex_id]["last_price"] for ex_id in exs if full_map[unified][ex_id].get("last_price", 0) > 0]
+                    if len(valid_prices) >= 2:
+                        sorted_p = sorted(valid_prices)
+                        median_p = sorted_p[len(sorted_p) // 2]
+                        if median_p > 0:
+                            filtered_exs = [ex_id for ex_id in exs if full_map[unified][ex_id].get("last_price", 0) > 0 and 0.25 <= (full_map[unified][ex_id]["last_price"] / median_p) <= 4.0]
+                            if len(filtered_exs) >= 2:
+                                exs = filtered_exs
+
                     if len(exs) >= 2:
                         # Собираем точные ID и комиссии для каждой биржи
                         ex_mappings = {}
                         for ex_id in exs:
                             ex_mappings[ex_id] = {
                                 "id": full_map[unified][ex_id]["exchange_id_symbol"],
-                                "fee": full_map[unified][ex_id]["taker_fee"]
+                                "fee": full_map[unified][ex_id]["taker_fee"],
+                                "multiplier": full_map[unified][ex_id].get("multiplier", 1.0)
                             }
                             
                             # Сохраняем мета-данные (фандинг и т.д.)
@@ -189,7 +419,8 @@ class MetaMonitor:
 
     async def close(self):
         for ex in self.exchanges.values():
-            await ex.close()
+            if ex is not None:
+                await ex.close()
 
 async def main():
     monitor = MetaMonitor()

@@ -110,3 +110,119 @@ def get_blacklist_keyboard(blacklist_items):
     buttons.append([InlineKeyboardButton(text="➕ Добавить монету", callback_data="add_to_blacklist")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_ex_link(exchange: str, symbol: str) -> str:
+    ex = exchange.lower()
+    return {
+        "binance": f"https://www.binance.com/en/futures/{symbol}",
+        "bybit": f"https://www.bybit.com/trade/usdt/{symbol}",
+        "okx": f"https://www.okx.com/trade-swap/{symbol.lower()}-usdt",
+        "mexc": f"https://contract.mexc.com/exchange/{symbol}_USDT",
+        "bitget": f"https://www.bitget.com/futures/usdt/{symbol}",
+        "gateio": f"https://www.gate.io/futures/USDT/{symbol}_USDT",
+        "bingx": f"https://bingx.com/en/futures/forward/{symbol}USDT",
+        "kucoinfutures": f"https://www.kucoin.com/trade/futures/{symbol}M",
+        "hyperliquid": f"https://app.hyperliquid.xyz/trade/{symbol}",
+        "asterdex": f"https://asterdex.com/en/futures/{symbol}",
+        "bitmart": f"https://www.bitmart.com/trade/en-US?symbol={symbol}&type=contract"
+    }.get(ex, "#")
+
+def format_time_to_funding(ts_ms) -> str:
+    import time
+    from datetime import datetime, timedelta, timezone
+    if not ts_ms:
+        now_utc = datetime.now(timezone.utc)
+        target_hour = (now_utc.hour // 8 + 1) * 8
+        if target_hour >= 24:
+            target_dt = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        else:
+            target_dt = now_utc.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+        ts_sec = target_dt.timestamp()
+    else:
+        ts_sec = int(ts_ms) / 1000
+
+    try:
+        diff = ts_sec - time.time()
+        dt_msk = datetime.fromtimestamp(ts_sec, timezone(timedelta(hours=3)))
+        time_str = dt_msk.strftime("%H:%M")
+        
+        if diff < 0: 
+            return f"{time_str} (сейчас)"
+        
+        hours = int(diff // 3600)
+        minutes = int((diff % 3600) // 60)
+        return f"{time_str} (через {hours}ч {minutes}м)"
+    except: 
+        return "н/д"
+
+def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
+    """
+    Формирует сообщение-карточку и клавиатуру в стиле @arby_futures_bot.
+    Использует HTML разметку для безопасной обработки ссылок.
+    """
+    total_pages = len(pairs)
+    if total_pages == 0:
+        return "⚠️ Нет активных сигналов.", InlineKeyboardMarkup(inline_keyboard=[])
+
+    if idx < 0 or idx >= total_pages:
+        idx = 0
+
+    s = pairs[idx]
+    buy_ex = s['buy_ex']
+    sell_ex = s['sell_ex']
+    buy_ex_upper = buy_ex.upper()
+    sell_ex_upper = sell_ex.upper()
+
+    tv_symbol = f"{buy_ex_upper}:{symbol}.P/{sell_ex_upper}:{symbol}.P"
+    tv_link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
+
+    warn_b = " ⚠️ Низкая ликвидность" if not s.get("buy_full", True) else ""
+    warn_s = " ⚠️ Низкая ликвидность" if not s.get("sell_full", True) else ""
+
+    text = (
+        f"🟢🔴 <b>${symbol}</b> (F/F)\n"
+        f"↑ {buy_ex_upper} F. / ↓ {sell_ex_upper} F.\n\n"
+        f"🏛 <b>Курсовой Спред:</b> {s['net_spread']:.2f}%\n"
+        f"💎 <b>Фандинг Спред:</b> {s['funding_spread']:.3f}%\n"
+        f"💸 <b>Комиссии:</b> {s['total_fee']:.3f}%\n"
+        f"📊 <b>Общий спред (VWAP):</b> <b>{s['vwap_net_spread']:.2f}%</b>\n"
+        f"💰 <b>Объем:</b> ${s['vol_usd']:g}\n\n"
+        f"🟩 <b>ЛОНГ НА ФЬЮЧАХ:</b>\n"
+        f'<a href="{get_ex_link(buy_ex, symbol)}">{buy_ex_upper} Futures</a>\n'
+        f"Цена: {s['buy_price']:.5f}\n"
+        f"Фандинг: {s['buy_funding']:.3f}% | {format_time_to_funding(s['buy_next_f'])}\n"
+        f"Объем 24ч: ${s['buy_vol_24h']/1e6:.1f}K\n"
+        f"Проскальзывание: {s['buy_slip']:.3f}%{warn_b}\n\n"
+        f"🟥 <b>ШОРТ НА ФЬЮЧАХ:</b>\n"
+        f'<a href="{get_ex_link(sell_ex, symbol)}">{sell_ex_upper} Futures</a>\n'
+        f"Цена: {s['sell_price']:.5f}\n"
+        f"Фандинг: {s['sell_funding']:.3f}% | {format_time_to_funding(s['sell_next_f'])}\n"
+        f"Объем 24ч: ${s['sell_vol_24h']/1e6:.1f}K\n"
+        f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
+        f'📈 <a href="{tv_link}">График спреда 🔗</a>\n'
+        f"==========="
+    )
+
+    other_pairs = [p for i, p in enumerate(pairs) if i != idx]
+    if other_pairs:
+        text += f"\n🏛 <b>Еще {len(other_pairs)} на других биржах::</b>\n"
+        for op in other_pairs:
+            text += f"⚖️ {op['buy_ex'].upper()}/{op['sell_ex'].upper()}: P {op['vwap_net_spread']:.2f}%, F {op['funding_spread']:.2f}%\n"
+
+    # Ряд 1: Отслеживать + Обновить
+    row1 = [
+        InlineKeyboardButton(text="• Отслеживать", callback_data=f"track_{symbol}_{buy_ex}_{sell_ex}"),
+        InlineKeyboardButton(text="🔄 Обновить", callback_data=f"symref:{symbol}:{idx}")
+    ]
+
+    # Ряд 2: Пагинатор < 1/N >
+    prev_idx = (idx - 1) % total_pages
+    next_idx = (idx + 1) % total_pages
+    row2 = [
+        InlineKeyboardButton(text="<", callback_data=f"sympage:{symbol}:{prev_idx}"),
+        InlineKeyboardButton(text=f"{idx + 1}/{total_pages}", callback_data="none"),
+        InlineKeyboardButton(text=">", callback_data=f"sympage:{symbol}:{next_idx}")
+    ]
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[row1, row2])
+    return text, keyboard

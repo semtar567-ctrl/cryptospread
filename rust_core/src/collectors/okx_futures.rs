@@ -13,8 +13,8 @@ use dashmap::DashMap;
 pub struct OkxFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., BTC-USDT-SWAP) -> (Unified (e.g., BTCUSDT), Taker Fee)
-    id_map: DashMap<String, (String, f64)>,
+    // Mapping: ExchangeID (e.g., BTC-USDT-SWAP) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier)
+    id_map: DashMap<String, (String, f64, f64)>,
     // Таймер для контрольного лога
     last_log_time: DashMap<String, Instant>,
 }
@@ -70,7 +70,8 @@ impl OkxFuturesCollector {
                                     if let Some(ex_info) = mapping.get("okx") {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
                                             let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
-                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee));
+                                            let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
+                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee, multiplier));
                                             new_ids.insert(ex_id.to_string());
                                         }
                                     }
@@ -144,15 +145,26 @@ impl OkxFuturesCollector {
         if let Some(arg) = v.get("arg") {
             if arg.get("channel").and_then(|c| c.as_str()) == Some("books5") {
                 if let Some(inst_id) = arg.get("instId").and_then(|i| i.as_str()) {
-                    let (unified_symbol, taker_fee) = match self.id_map.get(inst_id) {
+                    let (unified_symbol, taker_fee, multiplier) = match self.id_map.get(inst_id) {
                         Some(item) => item.value().clone(),
                         None => return Ok(()),
                     };
 
                     if let Some(data_array) = v.get("data").and_then(|d| d.as_array()) {
                         if let Some(data) = data_array.first() {
-                            let bids = self.parse_levels(data.get("bids").and_then(|b| b.as_array()));
-                            let asks = self.parse_levels(data.get("asks").and_then(|a| a.as_array()));
+                            let mut bids = self.parse_levels(data.get("bids").and_then(|b| b.as_array()));
+                            let mut asks = self.parse_levels(data.get("asks").and_then(|a| a.as_array()));
+
+                            if multiplier > 1.0 {
+                                for (p, a) in bids.iter_mut() {
+                                    *p /= multiplier;
+                                    *a *= multiplier;
+                                }
+                                for (p, a) in asks.iter_mut() {
+                                    *p /= multiplier;
+                                    *a *= multiplier;
+                                }
+                            }
 
                             if !bids.is_empty() && !asks.is_empty() {
                                 // Контрольный лог для BTC

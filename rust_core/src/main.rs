@@ -104,6 +104,69 @@ async fn main() -> anyhow::Result<()> {
         collector.run_dynamic(&mut mexc_wl_rx).await;
     });
 
+    // Запуск Bitget Futures коллектора
+    let bitget_config = config.clone();
+    let bitget_engine = Arc::clone(&engine);
+    let mut bitget_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::bitget_futures::BitgetFuturesCollector::new(bitget_config, bitget_engine);
+        collector.run_dynamic(&mut bitget_wl_rx).await;
+    });
+
+    // Запуск Gate.io Futures коллектора
+    let gateio_config = config.clone();
+    let gateio_engine = Arc::clone(&engine);
+    let mut gateio_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::gateio_futures::GateioFuturesCollector::new(gateio_config, gateio_engine);
+        collector.run_dynamic(&mut gateio_wl_rx).await;
+    });
+
+    // Запуск BingX Futures коллектора
+    let bingx_config = config.clone();
+    let bingx_engine = Arc::clone(&engine);
+    let mut bingx_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::bingx_futures::BingxFuturesCollector::new(bingx_config, bingx_engine);
+        collector.run_dynamic(&mut bingx_wl_rx).await;
+    });
+
+    // Запуск KuCoin Futures коллектора
+    let kucoin_config = config.clone();
+    let kucoin_engine = Arc::clone(&engine);
+    let mut kucoin_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::kucoin_futures::KucoinFuturesCollector::new(kucoin_config, kucoin_engine);
+        collector.run_dynamic(&mut kucoin_wl_rx).await;
+    });
+
+    // Запуск Hyperliquid Futures коллектора
+    let hyperliquid_config = config.clone();
+    let hyperliquid_engine = Arc::clone(&engine);
+    let mut hyperliquid_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::hyperliquid_futures::HyperliquidFuturesCollector::new(hyperliquid_config, hyperliquid_engine);
+        collector.run_dynamic(&mut hyperliquid_wl_rx).await;
+    });
+
+    // Запуск Aster DEX Futures коллектора
+    let asterdex_config = config.clone();
+    let asterdex_engine = Arc::clone(&engine);
+    let mut asterdex_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::asterdex_futures::AsterdexFuturesCollector::new(asterdex_config, asterdex_engine);
+        collector.run_dynamic(&mut asterdex_wl_rx).await;
+    });
+
+    // Запуск BitMart Futures коллектора
+    let bitmart_config = config.clone();
+    let bitmart_engine = Arc::clone(&engine);
+    let mut bitmart_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::bitmart_futures::BitmartFuturesCollector::new(bitmart_config, bitmart_engine);
+        collector.run_dynamic(&mut bitmart_wl_rx).await;
+    });
+
     // Запуск основного цикла аналитики (раз в секунду)
     let tick_engine = Arc::clone(&engine);
     tokio::spawn(async move {
@@ -112,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    info!("Rust Core initialized. Binance, Bybit, OKX and MEXC collectors started.");
+    info!("Rust Core initialized. Binance, Bybit, OKX, MEXC, Bitget, Gate.io, BingX, KuCoin, Hyperliquid, Aster DEX and BitMart collectors started.");
     
     // Временная заглушка, чтобы main не завершался сразу
     tokio::signal::ctrl_c().await?;

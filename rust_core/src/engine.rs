@@ -262,6 +262,25 @@ impl SpreadEngine {
         // Умножаем на 2.0 для полного круга сделки (открытие + закрытие)
         let net_spread_percent = spread_percent - (buy_fee + sell_fee) * 2.0 * 100.0;
 
+        // Игнорируем аномальные спреды (> 500% или NaN), например при некорректном размере контракта
+        if buy_price <= 0.0 || sell_price <= 0.0 || net_spread_percent.is_nan() || net_spread_percent.abs() > 500.0 {
+            let log_key = (format!("{}_anomaly", symbol), buy_ex.to_string(), sell_ex.to_string());
+            let should_log = {
+                let mut cooldown = self.log_cooldown.lock().unwrap();
+                let last_log = cooldown.get(&log_key);
+                if last_log.is_none() || last_log.unwrap().elapsed() >= std::time::Duration::from_secs(60) {
+                    cooldown.insert(log_key, std::time::Instant::now());
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_log {
+                warn!("⚠️ Anomaly spread ignored for {}: {:.2}% ({} -> {})", symbol, net_spread_percent, buy_ex, sell_ex);
+            }
+            return Ok(());
+        }
+
         // РЕЖИМ ТОТАЛЬНОГО ЗРЕНИЯ: Показываем ВООБЩЕ ВСЕ расхождения цен в режиме отладки
         debug!("🔍 RAW CHECK: {} ({} -> {}) | Spread: {:.4}%", 
               symbol, buy_ex, sell_ex, net_spread_percent);

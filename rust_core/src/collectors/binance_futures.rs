@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct BinanceFuturesCollector {
     config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., btcusdt) -> (Unified (e.g., BTCUSDT), Taker Fee)
-    id_map: Mutex<HashMap<String, (String, f64)>>,
+    // Mapping: ExchangeID (e.g., btcusdt) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier)
+    id_map: Mutex<HashMap<String, (String, f64, f64)>>,
 }
 
 
@@ -68,7 +68,8 @@ impl BinanceFuturesCollector {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
                                             let binance_stream_id = ex_id.to_lowercase();
                                             let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
-                                            new_id_map.insert(binance_stream_id.clone(), (unified.clone(), fee));
+                                            let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
+                                            new_id_map.insert(binance_stream_id.clone(), (unified.clone(), fee, multiplier));
                                             new_ids.insert(binance_stream_id);
                                         }
                                     }
@@ -136,10 +137,21 @@ impl BinanceFuturesCollector {
                     id_map.get(binance_id).cloned()
                 };
 
-                if let Some((symbol, taker_fee)) = map_entry {
-                    let bids = self.parse_levels(data.get("b").and_then(|b| b.as_array()));
-                    let asks = self.parse_levels(data.get("a").and_then(|a| a.as_array()));
+                if let Some((symbol, taker_fee, multiplier)) = map_entry {
+                    let mut bids = self.parse_levels(data.get("b").and_then(|b| b.as_array()));
+                    let mut asks = self.parse_levels(data.get("a").and_then(|a| a.as_array()));
                     
+                    if multiplier > 1.0 {
+                        for (p, a) in bids.iter_mut() {
+                            *p /= multiplier;
+                            *a *= multiplier;
+                        }
+                        for (p, a) in asks.iter_mut() {
+                            *p /= multiplier;
+                            *a *= multiplier;
+                        }
+                    }
+
                     let update = OrderBookUpdate {
                         exchange: "binance".to_string(),
                         symbol,

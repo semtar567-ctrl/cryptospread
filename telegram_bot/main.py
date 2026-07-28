@@ -16,11 +16,15 @@ from telegram_bot.utils.states import SettingsStates
 aiohttp.resolver.DefaultResolver = aiohttp.resolver.ThreadedResolver
 
 from aiogram import Bot, Dispatcher, types, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from telegram_bot.config import settings
 from telegram_bot.database.engine import init_db, AsyncSessionLocal
 from telegram_bot.database.models import User, UserSetting, UserExchange, TrackedSpread
-from telegram_bot.utils.keyboards import get_reply_main_menu, get_trade_types_keyboard, get_futures_settings_keyboard, get_exchanges_keyboard, get_spreads_types_keyboard
+from telegram_bot.utils.keyboards import (
+    get_reply_main_menu, get_trade_types_keyboard, get_futures_settings_keyboard, 
+    get_exchanges_keyboard, get_spreads_types_keyboard, format_signal_card_msg_and_kb
+)
 from telegram_bot.utils.redis_sync import sync_user_settings_to_redis, sync_all_users_to_redis
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -54,137 +58,138 @@ async def show_categories_callback(callback: types.CallbackQuery):
         )
 
 async def category_futures_futures_callback(callback: types.CallbackQuery):
+    from collections import defaultdict
     from redis.asyncio import Redis
     redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
     try:
         keys = await redis.keys("current_spread:futures_futures:*")
-        spreads = []
+        by_symbol = defaultdict(list)
         for key in keys:
             data = await redis.get(key)
             if data:
-                spreads.append(json.loads(data))
-        
-        spreads.sort(key=lambda s: s.get("vwap_net_spread", 0.0), reverse=True)
-        
-        text = "🟢 **СВЯЗКИ: ФЬЮЧЕРС/ФЬЮЧЕРС МЕЖБИРЖ**\n\nВыберите связку для просмотра подробной информации:\n\n"
+                try:
+                    s = json.loads(data)
+                    sym = s.get("symbol")
+                    if sym:
+                        by_symbol[sym].append(s)
+                except Exception:
+                    pass
+
+        symbol_best_pairs = []
+        for symbol, pairs in by_symbol.items():
+            best_pair = max(pairs, key=lambda s: float(s.get("vwap_net_spread") or 0.0))
+            symbol_best_pairs.append((symbol, best_pair))
+
+        symbol_best_pairs.sort(key=lambda item: float(item[1].get("vwap_net_spread") or 0.0), reverse=True)
+
+        text = "🟢 <b>СВЯЗКИ: ФЬЮЧЕРС/ФЬЮЧЕРС МЕЖБИРЖ</b>\n\nВыберите связку для просмотра подробной информации:\n\n"
         buttons = []
-        
-        if not spreads:
-            text += "*(нет активных связок в данный момент)*"
+
+        if not symbol_best_pairs:
+            text += "<i>(нет активных связок в данный момент)</i>"
         else:
-            for i, s in enumerate(spreads[:10], 1):
-                symbol = s['symbol']
-                buy_ex = s['buy_ex']
-                sell_ex = s['sell_ex']
-                spread_val = s['vwap_net_spread']
-                text += f"{i}. {symbol} ({buy_ex.upper()} -> {sell_ex.upper()}) | **{spread_val:.2f}%**\n"
-                
-                btn_text = f"{symbol} ({buy_ex.upper()}->{sell_ex.upper()}) | {spread_val:.2f}%"
+            for i, (symbol, s) in enumerate(symbol_best_pairs, 1):
+                buy_ex = s.get('buy_ex', '').upper()
+                sell_ex = s.get('sell_ex', '').upper()
+                spread_val = float(s.get('vwap_net_spread') or 0.0)
+                line_str = f"{i}. {symbol} ({buy_ex} -> {sell_ex}) | <b>{spread_val:.2f}%</b>"
+                text += line_str + "\n"
+
+                btn_text = f"{symbol} ({buy_ex}->{sell_ex}) | {spread_val:.2f}%"
                 buttons.append([types.InlineKeyboardButton(
-                    text=btn_text, 
-                    callback_data=f"show_spread_futures_futures_{symbol}_{buy_ex}_{sell_ex}"
+                    text=btn_text,
+                    callback_data=f"show_symbol_card_{symbol}"
                 )])
-        
+
         buttons.append([
             types.InlineKeyboardButton(text="🔄 Обновить", callback_data="category_futures_futures"),
             types.InlineKeyboardButton(text="⬅️ Назад", callback_data="show_categories")
         ])
-        
+
         kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     finally:
         await redis.aclose()
 
-async def show_spread_details_callback(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    if len(parts) < 7:
+
+async def show_symbol_card_callback(callback: types.CallbackQuery):
+    if callback.data.startswith("show_symbol_card_"):
+        symbol = callback.data.replace("show_symbol_card_", "")
+    elif callback.data.startswith("show_spread_futures_futures_"):
+        parts = callback.data.split("_")
+        if len(parts) >= 5:
+            symbol = parts[4]
+        else:
+            symbol = ""
+    else:
+        symbol = ""
+
+    if not symbol:
         await callback.answer("Ошибка формата данных", show_alert=True)
         return
-    
-    symbol = parts[4]
-    buy_ex = parts[5]
-    sell_ex = parts[6]
-    
+
     from redis.asyncio import Redis
     redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
     try:
-        key = f"current_spread:futures_futures:{symbol}:{buy_ex}:{sell_ex}"
-        data_raw = await redis.get(key)
-        if not data_raw:
+        keys = await redis.keys(f"current_spread:futures_futures:{symbol}:*")
+        pairs = []
+        for key in keys:
+            data_raw = await redis.get(key)
+            if data_raw:
+                try:
+                    pairs.append(json.loads(data_raw))
+                except Exception:
+                    pass
+
+        if not pairs:
             await callback.answer("⚠️ Эта связка больше не активна (спред ушел).", show_alert=True)
             await category_futures_futures_callback(callback)
             return
-        
-        s = json.loads(data_raw)
-        
-        tv_symbol = f"{s['buy_ex'].upper()}:{s['symbol']}.P/{s['sell_ex'].upper()}:{s['symbol']}.P"
-        tv_link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
-        
-        warn_b = " ⚠️ Низкая ликвидность" if not s.get("buy_full", True) else ""
-        warn_s = " ⚠️ Низкая ликвидность" if not s.get("sell_full", True) else ""
-        
-        def format_time_to_funding(ts_ms):
-            if not ts_ms:
-                from datetime import datetime, timedelta, timezone
-                now_utc = datetime.now(timezone.utc)
-                target_hour = (now_utc.hour // 8 + 1) * 8
-                if target_hour >= 24:
-                    target_dt = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-                else:
-                    target_dt = now_utc.replace(hour=target_hour, minute=0, second=0, microsecond=0)
-                ts_sec = target_dt.timestamp()
-            else:
-                ts_sec = int(ts_ms) / 1000
-            try:
-                diff = ts_sec - time.time()
-                from datetime import datetime, timedelta, timezone
-                dt_msk = datetime.fromtimestamp(ts_sec, timezone(timedelta(hours=3)))
-                time_str = dt_msk.strftime("%H:%M")
-                if diff < 0: return f"{time_str} (сейчас)"
-                hours = int(diff // 3600)
-                minutes = int((diff % 3600) // 60)
-                return f"{time_str} (через {hours}ч {minutes}м)"
-            except: return "н/д"
 
-        msg = (
-            f"🟦🟧 **{s['symbol']}** (F/F)\n"
-            f"↑ {s['buy_ex'].upper()} F. / ↓ {s['sell_ex'].upper()} F.\n\n"
-            f"🛠 **Комиссии:** {s['total_fee']:.3f}%\n"
-            f"📊 **Курсовой Спред:** {s['net_spread']:.2f}%\n"
-            f"💎 **Фандинг Спред:** {s['funding_spread']:.3f}%\n"
-            f"💰 **Объем:** ${s['vol_usd']:g}\n"
-            f"🚀 **Спред (VWAP):** **{s['vwap_net_spread']:.2f}%**\n\n"
-            f"🟩 **ЛОНГ НА ФЬЮЧЕРСЕ:**\n"
-            f"[{s['buy_ex'].upper()}]({_get_ex_link_main(s['buy_ex'], s['symbol'])})\n"
-            f"Цена: {s['buy_price']:.5f}\n"
-            f"Фандинг: {s['buy_funding']:.3f}% | {format_time_to_funding(s['buy_next_f'])}\n"
-            f"Объем 24ч: ${s['buy_vol_24h']/1e6:.1f}M\n"
-            f"Проскальзывание: {s['buy_slip']:.3f}%{warn_b}\n\n"
-            f"🟥 **ШОРТ НА ФЬЮЧЕРСЕ:**\n"
-            f"[{s['sell_ex'].upper()}]({_get_ex_link_main(s['sell_ex'], s['symbol'])})\n"
-            f"Цена: {s['sell_price']:.5f}\n"
-            f"Фандинг: {s['sell_funding']:.3f}% | {format_time_to_funding(s['sell_next_f'])}\n"
-            f"Объем 24ч: ${s['sell_vol_24h']/1e6:.1f}M\n"
-            f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
-            f"📈 [График спреда]({tv_link})"
-        )
-        
-        kb = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎯 Отслеживать схождение", callback_data=f"select_conv_{symbol}_{buy_ex}_{sell_ex}")],
-            [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="category_futures_futures")]
-        ])
-        
-        await callback.message.edit_text(msg, parse_mode="Markdown", reply_markup=kb, disable_web_page_preview=True)
+        pairs.sort(key=lambda p: float(p.get("vwap_net_spread") or 0.0), reverse=True)
+
+        user_id = callback.from_user.id
+        symbol_signal_key = f"symbol_signal:{user_id}:{symbol}"
+        data_to_store = {
+            "symbol": symbol,
+            "pairs": pairs,
+            "updated_at": time.time()
+        }
+        await redis.set(symbol_signal_key, json.dumps(data_to_store), ex=300)
+
+        text, kb = format_signal_card_msg_and_kb(symbol, pairs, idx=0)
+        try:
+            await callback.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=kb,
+                disable_web_page_preview=True
+            )
+            await callback.answer()
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                await callback.answer()
+            else:
+                raise e
     finally:
         await redis.aclose()
+
+show_spread_details_callback = show_symbol_card_callback
 
 def _get_ex_link_main(exchange, symbol):
     return {
         "binance": f"https://www.binance.com/en/futures/{symbol}",
         "bybit": f"https://www.bybit.com/trade/usdt/{symbol}",
         "okx": f"https://www.okx.com/trade-swap/{symbol.lower()}-usdt",
-        "mexc": f"https://contract.mexc.com/exchange/{symbol}_USDT"
-    }.get(exchange, "#")
+        "mexc": f"https://contract.mexc.com/exchange/{symbol}_USDT",
+        "bitget": f"https://www.bitget.com/futures/usdt/{symbol}",
+        "gateio": f"https://www.gate.io/futures/USDT/{symbol}_USDT",
+        "bingx": f"https://bingx.com/en/futures/forward/{symbol}USDT",
+        "kucoinfutures": f"https://www.kucoin.com/trade/futures/{symbol}M",
+        "hyperliquid": f"https://app.hyperliquid.xyz/trade/{symbol}",
+        "asterdex": f"https://asterdex.com/en/futures/{symbol}",
+        "bitmart": f"https://www.bitmart.com/trade/en-US?symbol={symbol}&type=contract"
+    }.get(exchange.lower(), "#")
 
 async def select_convergence_callback(callback: types.CallbackQuery):
     data = callback.data
@@ -388,7 +393,7 @@ async def start_command(message: types.Message):
             user = User(user_id=user_id, username=username, is_admin=True)
             session.add(user)
             session.add(UserSetting(user_id=user_id, trade_type="futures_futures"))
-            for ex_id in ["binance", "bybit", "okx", "mexc"]:
+            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart"]:
                 session.add(UserExchange(user_id=user_id, exchange_id=ex_id))
             await session.commit()
             await message.answer(f"👋 Добро пожаловать, {username or 'друг'}!", reply_markup=get_reply_main_menu())
@@ -428,7 +433,7 @@ async def exchanges_settings_callback(callback: types.CallbackQuery):
         result = await session.execute(stmt)
         existing_exchanges = {ex.exchange_id for ex in result.scalars().all()}
         
-        required_exchanges = ["binance", "bybit", "okx", "mexc"]
+        required_exchanges = ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart"]
         added = False
         for ex_id in required_exchanges:
             if ex_id not in existing_exchanges:
@@ -634,6 +639,130 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp.resolver import ThreadedResolver
 from aiogram.client.default import DefaultBotProperties
 
+async def sympage_callback(callback: types.CallbackQuery):
+    """Обработка переключения страниц (бирж) в карточке сигнала: sympage:{symbol}:{idx}."""
+    parts = callback.data.split(":")
+    if len(parts) < 3:
+        await callback.answer("Ошибка формата данных", show_alert=True)
+        return
+
+    symbol = parts[1]
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        await callback.answer("Ошибка индекса", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+
+    from redis.asyncio import Redis
+    redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+    try:
+        key = f"symbol_signal:{user_id}:{symbol}"
+        raw_data = await redis.get(key)
+        if not raw_data:
+            await callback.answer("⚠️ Данные сигнала устарели или истекли.", show_alert=True)
+            return
+
+        data = json.loads(raw_data)
+        pairs = data.get("pairs", [])
+        if not pairs:
+            await callback.answer("⚠️ Активные связки не найдены.", show_alert=True)
+            return
+
+        text, kb = format_signal_card_msg_and_kb(symbol, pairs, idx)
+        try:
+            await callback.message.edit_text(
+                text, 
+                parse_mode="HTML", 
+                reply_markup=kb, 
+                disable_web_page_preview=True
+            )
+            await callback.answer()
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                await callback.answer("Уже на этой странице 👌")
+            else:
+                raise e
+    except Exception as e:
+        logger.error("Error in sympage_callback", error=str(e))
+        await callback.answer("Ошибка при переключении.", show_alert=True)
+    finally:
+        await redis.aclose()
+
+
+async def symref_callback(callback: types.CallbackQuery):
+    """Обновление данных карточки сигнала по запросу пользователя: symref:{symbol}:{idx}."""
+    parts = callback.data.split(":")
+    if len(parts) < 3:
+        await callback.answer("Ошибка формата данных", show_alert=True)
+        return
+
+    symbol = parts[1]
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        await callback.answer("Ошибка индекса", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+
+    from redis.asyncio import Redis
+    redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+    try:
+        spread_keys = await redis.keys(f"current_spread:futures_futures:{symbol}:*")
+        fresh_pairs = []
+        for skey in spread_keys:
+            sdata = await redis.get(skey)
+            if sdata:
+                try:
+                    fresh_pairs.append(json.loads(sdata))
+                except: pass
+
+        key = f"symbol_signal:{user_id}:{symbol}"
+        raw_data = await redis.get(key)
+
+        if fresh_pairs:
+            fresh_pairs.sort(key=lambda p: p.get("vwap_net_spread", 0.0), reverse=True)
+            pairs = fresh_pairs
+            data_to_store = {
+                "symbol": symbol,
+                "pairs": pairs,
+                "updated_at": time.time()
+            }
+            await redis.set(key, json.dumps(data_to_store), ex=300)
+        elif raw_data:
+            data = json.loads(raw_data)
+            pairs = data.get("pairs", [])
+        else:
+            await callback.answer("⚠️ Данные сигнала истекли.", show_alert=True)
+            return
+
+        if not pairs:
+            await callback.answer("⚠️ Активные связки не найдены.", show_alert=True)
+            return
+
+        text, kb = format_signal_card_msg_and_kb(symbol, pairs, idx)
+        try:
+            await callback.message.edit_text(
+                text, 
+                parse_mode="HTML", 
+                reply_markup=kb, 
+                disable_web_page_preview=True
+            )
+            await callback.answer("🔄 Данные успешно обновлены!")
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                await callback.answer("Данные уже актуальны 👌")
+            else:
+                raise e
+    except Exception as e:
+        logger.error("Error in symref_callback", error=str(e))
+        await callback.answer("Ошибка при обновлении данных.", show_alert=True)
+    finally:
+        await redis.aclose()
+
+
 class IPv4Session(AiohttpSession):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -692,7 +821,7 @@ async def main():
     # Связки и схождение
     dp.callback_query.register(show_categories_callback, F.data == "show_categories")
     dp.callback_query.register(category_futures_futures_callback, F.data == "category_futures_futures")
-    dp.callback_query.register(show_spread_details_callback, F.data.startswith("show_spread_futures_futures_"))
+    dp.callback_query.register(show_symbol_card_callback, F.data.startswith("show_symbol_card_") | F.data.startswith("show_spread_futures_futures_"))
     
     dp.callback_query.register(select_convergence_callback, F.data.startswith("select_conv_") | F.data.startswith("track_"))
     dp.callback_query.register(set_convergence_val_callback, F.data.startswith("set_conv_") & ~F.data.startswith("set_conv_manual_"))
@@ -703,6 +832,10 @@ async def main():
     dp.callback_query.register(untrack_spread_callback, F.data.startswith("untrack_spread_"))
     
     dp.callback_query.register(close_menu_callback, F.data == "close_menu")
+    
+    # Пагинатор и обновление карточки сигнала
+    dp.callback_query.register(sympage_callback, F.data.startswith("sympage:"))
+    dp.callback_query.register(symref_callback, F.data.startswith("symref:"))
     
     # Заглушки для типов торговли
     dp.callback_query.register(placeholder_callback, F.data.startswith("trade_"))

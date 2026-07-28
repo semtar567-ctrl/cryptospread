@@ -13,8 +13,8 @@ use dashmap::DashMap;
 pub struct BybitFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., BTCUSDT) -> (Unified (e.g., BTCUSDT), Taker Fee)
-    id_map: DashMap<String, (String, f64)>,
+    // Mapping: ExchangeID (e.g., BTCUSDT) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier)
+    id_map: DashMap<String, (String, f64, f64)>,
     // Хранилище полных стаканов: symbol -> (bids, asks)
     books: DashMap<String, (Vec<(f64, f64)>, Vec<(f64, f64)>)>,
     // Таймер для контрольного лога
@@ -71,7 +71,8 @@ impl BybitFuturesCollector {
                                     if let Some(ex_info) = mapping.get("bybit") {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
                                             let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
-                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee));
+                                            let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
+                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee, multiplier));
                                             new_ids.insert(ex_id.to_string());
                                         }
                                     }
@@ -150,7 +151,7 @@ impl BybitFuturesCollector {
 
         let bybit_id = topic.split('.').last().unwrap_or("unknown");
         
-        let (unified_symbol, taker_fee) = match self.id_map.get(bybit_id) {
+        let (unified_symbol, taker_fee, multiplier) = match self.id_map.get(bybit_id) {
             Some(item) => item.value().clone(),
             None => return Ok(()),
         };
@@ -170,11 +171,22 @@ impl BybitFuturesCollector {
 
             if !current_book.0.is_empty() && !current_book.1.is_empty() {
                 // Копируем данные из DashMap-блокировки, чтобы отправить в движок
-                let bids = current_book.0.clone();
-                let asks = current_book.1.clone();
+                let mut bids = current_book.0.clone();
+                let mut asks = current_book.1.clone();
                 
                 // Освобождаем блокировку DashMap (current_book выходит из области видимости ниже)
                 drop(current_book);
+
+                if multiplier > 1.0 {
+                    for (p, a) in bids.iter_mut() {
+                        *p /= multiplier;
+                        *a *= multiplier;
+                    }
+                    for (p, a) in asks.iter_mut() {
+                        *p /= multiplier;
+                        *a *= multiplier;
+                    }
+                }
 
                 // Контрольный лог (раз в 10 сек для каждой монеты, если это BTC)
                 if unified_symbol == "BTCUSDT" {

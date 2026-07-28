@@ -19,8 +19,8 @@ enum PoolCommand {
 pub struct MexcFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Маппинг: MEXC_ID (BTC_USDT) -> (Unified (e.g., BTCUSDT), Taker Fee)
-    id_map: Arc<Mutex<HashMap<String, (String, f64)>>>,
+    // Маппинг: MEXC_ID (BTC_USDT) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier)
+    id_map: Arc<Mutex<HashMap<String, (String, f64, f64)>>>,
     // Список всех монет, на которые мы СЕЙЧАС подписаны (по всем пулам)
     active_subscriptions: HashSet<String>,
     // Каналы связи с каждым запущенным пулом
@@ -50,7 +50,8 @@ impl MexcFuturesCollector {
                     if let Some(ex_info) = mapping.get("mexc") {
                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
                             let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
-                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee));
+                            let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
+                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee, multiplier));
                             target_ids.insert(ex_id.to_string());
                         }
                     }
@@ -120,7 +121,7 @@ impl MexcFuturesCollector {
         pool_id: usize,
         mut cmd_rx: mpsc::UnboundedReceiver<PoolCommand>,
         engine: Arc<SpreadEngine>,
-        id_map: Arc<Mutex<HashMap<String, (String, f64)>>>,
+        id_map: Arc<Mutex<HashMap<String, (String, f64, f64)>>>,
         initial_symbol: String
     ) {
         let url = "wss://contract.mexc.com/edge";
@@ -197,7 +198,7 @@ impl MexcFuturesCollector {
     async fn handle_message(
         text: &str, 
         engine: &Arc<SpreadEngine>,
-        id_map: &Arc<Mutex<HashMap<String, (String, f64)>>>
+        id_map: &Arc<Mutex<HashMap<String, (String, f64, f64)>>>
     ) -> anyhow::Result<()> {
         let v: Value = serde_json::from_str(text)?;
 
@@ -209,10 +210,21 @@ impl MexcFuturesCollector {
                         id_map_guard.get(inst_id).cloned()
                     };
 
-                    if let Some((symbol, taker_fee)) = map_entry {
+                    if let Some((symbol, taker_fee, multiplier)) = map_entry {
                         if let Some(data) = v.get("data") {
-                            let bids = Self::parse_levels(data.get("bids").and_then(|b| b.as_array()));
-                            let asks = Self::parse_levels(data.get("asks").and_then(|a| a.as_array()));
+                            let mut bids = Self::parse_levels(data.get("bids").and_then(|b| b.as_array()));
+                            let mut asks = Self::parse_levels(data.get("asks").and_then(|a| a.as_array()));
+
+                            if multiplier > 1.0 {
+                                for (p, a) in bids.iter_mut() {
+                                    *p /= multiplier;
+                                    *a *= multiplier;
+                                }
+                                for (p, a) in asks.iter_mut() {
+                                    *p /= multiplier;
+                                    *a *= multiplier;
+                                }
+                            }
 
                             if !bids.is_empty() && !asks.is_empty() {
                                 let update = OrderBookUpdate {

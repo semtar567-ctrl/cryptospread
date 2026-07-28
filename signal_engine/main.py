@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from telegram_bot.config import settings
 from telegram_bot.database.engine import AsyncSessionLocal
 from telegram_bot.database.models import User, UserSetting, TrackedSpread
+from telegram_bot.utils.keyboards import format_signal_card_msg_and_kb
 from aiogram import Bot, types
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp.resolver import ThreadedResolver
@@ -90,7 +91,7 @@ class SignalEngine:
                     await self.bot.send_message(
                         user_id, 
                         msg, 
-                        parse_mode="Markdown", 
+                        parse_mode="HTML", 
                         reply_markup=kb, 
                         disable_web_page_preview=True
                     )
@@ -247,51 +248,48 @@ class SignalEngine:
                     is_above_threshold = False
 
             if is_above_threshold:
-                # 1. Анти-спам (Deduplication) - 60 секунд на одну и ту же связку для юзера
-                key = (symbol, buy_ex, sell_ex, uid)
-                if key in self.last_alert_sent:
-                    if now - self.last_alert_sent[key] < 60:
+                # 1. Анти-спам (60 секунд на монету для каждого юзера)
+                sym_clean = symbol.replace("/", "").replace("-", "")
+                cooldown_key = (uid, sym_clean)
+                if cooldown_key in self.last_alert_sent:
+                    if now - self.last_alert_sent[cooldown_key] < 60:
                         continue
 
-                await self.queue_styled_alert(uid, signal_info)
-                self.last_alert_sent[key] = now
+                # Группируем все доступные связки по данному тикеру
+                spread_keys = await self.redis.keys(f"current_spread:futures_futures:{sym_clean}:*")
+                pairs_map = {}
+                for skey in spread_keys:
+                    sdata = await self.redis.get(skey)
+                    if sdata:
+                        try:
+                            sp = json.loads(sdata)
+                            pkey = (sp["buy_ex"], sp["sell_ex"])
+                            pairs_map[pkey] = sp
+                        except: pass
 
-    async def queue_styled_alert(self, user_id, s):
-        """Формирует сообщение и кладет его в очередь на отправку."""
-        tv_symbol = f"{s['buy_ex'].upper()}:{s['symbol']}.P/{s['sell_ex'].upper()}:{s['symbol']}.P"
-        tv_link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
-        
-        warn_b = " ⚠️ Низкая ликвидность" if not s["buy_full"] else ""
-        warn_s = " ⚠️ Низкая ликвидность" if not s["sell_full"] else ""
+                pairs_map[(buy_ex, sell_ex)] = signal_info
+                aggregated_pairs = list(pairs_map.values())
+                aggregated_pairs.sort(key=lambda p: p.get("vwap_net_spread", 0.0), reverse=True)
 
-        msg = (
-            f"🟦🟧 **{s['symbol']}** (F/F)\n"
-            f"↑ {s['buy_ex'].upper()} F. / ↓ {s['sell_ex'].upper()} F.\n\n"
-            f"🛠 **Комиссии:** {s['total_fee']:.3f}%\n"
-            f"📊 **Курсовой Спред:** {s['net_spread']:.2f}%\n"
-            f"💎 **Фандинг Спред:** {s['funding_spread']:.3f}%\n"
-            f"💰 **Объем:** ${s['vol_usd']:g}\n"
-            f"🚀 **Спред (VWAP):** **{s['vwap_net_spread']:.2f}%**\n\n"
-            f"🟩 **ЛОНГ НА ФЬЮЧЕРСЕ:**\n"
-            f"[{s['buy_ex'].upper()}]({self._get_ex_link(s['buy_ex'], s['symbol'])})\n"
-            f"Цена: {s['buy_price']:.5f}\n"
-            f"Фандинг: {s['buy_funding']:.3f}% | {self._format_time_to_funding(s['buy_next_f'])}\n"
-            f"Объем 24ч: ${s['buy_vol_24h']/1e6:.1f}M\n"
-            f"Проскальзывание: {s['buy_slip']:.3f}%{warn_b}\n\n"
-            f"🟥 **ШОРТ НА ФЬЮЧЕРСЕ:**\n"
-            f"[{s['sell_ex'].upper()}]({self._get_ex_link(s['sell_ex'], s['symbol'])})\n"
-            f"Цена: {s['sell_price']:.5f}\n"
-            f"Фандинг: {s['sell_funding']:.3f}% | {self._format_time_to_funding(s['sell_next_f'])}\n"
-            f"Объем 24ч: ${s['sell_vol_24h']/1e6:.1f}M\n"
-            f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
-            f"📈 [График спреда]({tv_link})"
-        )
-        kb = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎯 Отслеживать схождение", callback_data=f"track_{s['symbol']}_{s['buy_ex']}_{s['sell_ex']}")]
-        ])
-        
+                # Сохраняем агрегированный набор в Redis для интерактивного переключения в боте (TTL 300с)
+                symbol_signal_key = f"symbol_signal:{uid}:{sym_clean}"
+                aggregated_payload = {
+                    "symbol": sym_clean,
+                    "pairs": aggregated_pairs,
+                    "updated_at": now
+                }
+                await self.redis.set(symbol_signal_key, json.dumps(aggregated_payload), ex=300)
+
+                await self.queue_styled_alert(uid, sym_clean, aggregated_pairs, idx=0)
+                self.last_alert_sent[cooldown_key] = now
+
+    async def queue_styled_alert(self, user_id, symbol, pairs, idx=0):
+        """Формирует карточку сообщения и кладет её в очередь на отправку."""
+        if not pairs:
+            return
+        msg, kb = format_signal_card_msg_and_kb(symbol, pairs, idx)
         await self.msg_queue.put((user_id, msg, kb))
-        logger.debug("Signal added to queue", symbol=s['symbol'], qsize=self.msg_queue.qsize())
+        logger.debug("Signal added to queue", symbol=symbol, qsize=self.msg_queue.qsize())
 
     def _get_ex_link(self, exchange, symbol):
         return {
