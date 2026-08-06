@@ -43,12 +43,14 @@ impl AsterdexFuturesCollector {
                     // Re-subscribe if reconnecting
                     if !current_ids.is_empty() {
                         let to_subscribe: Vec<String> = current_ids.iter().map(|id| format!("{}@depth20@100ms", id.to_lowercase())).collect();
-                        let sub_msg = serde_json::json!({
-                            "method": "SUBSCRIBE",
-                            "params": to_subscribe,
-                            "id": 1
-                        });
-                        let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                        for (idx, chunk) in to_subscribe.chunks(50).enumerate() {
+                            let sub_msg = serde_json::json!({
+                                "method": "SUBSCRIBE",
+                                "params": chunk,
+                                "id": idx + 1
+                            });
+                            let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                        }
                     }
 
                     loop {
@@ -65,10 +67,20 @@ impl AsterdexFuturesCollector {
                                     Some(Ok(Message::Ping(p))) => {
                                         let _ = ws_stream.send(Message::Pong(p)).await;
                                     }
-                                    _ => {
-                                        warn!("Aster DEX WS connection lost. Reconnecting...");
+                                    Some(Ok(Message::Pong(_))) => {}
+                                    Some(Ok(Message::Frame(_))) => {}
+                                    Some(Ok(Message::Binary(_))) => {}
+                                    None => {
+                                        warn!("Aster DEX WS stream closed. Reconnecting in 1s...");
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                                         break;
                                     }
+                                    Some(Err(e)) => {
+                                        warn!("Aster DEX WS error: {}. Reconnecting in 1s...", e);
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                        break;
+                                    }
+                                    _ => {}
                                 }
                             }
                             Ok(whitelist) = whitelist_rx.recv() => {
@@ -78,10 +90,11 @@ impl AsterdexFuturesCollector {
                                 for (unified, mapping) in whitelist.iter() {
                                     if let Some(ex_info) = mapping.get("asterdex") {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
-                                            let stream_id = ex_id.to_lowercase();
                                             let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0004);
                                             let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
                                             let contract_size = ex_info.get("contract_size").and_then(|c| c.as_f64()).unwrap_or(1.0);
+
+                                            let stream_id = ex_id.replace("/", "").replace("-", "").to_lowercase();
                                             new_id_map.insert(stream_id.clone(), (unified.clone(), fee, multiplier, contract_size));
                                             new_ids.insert(stream_id);
                                         }
@@ -107,22 +120,26 @@ impl AsterdexFuturesCollector {
 
                                 if !to_subscribe_streams.is_empty() {
                                     info!("Aster DEX: Subscribing to {} streams", to_subscribe_streams.len());
-                                    let sub_msg = serde_json::json!({
-                                        "method": "SUBSCRIBE",
-                                        "params": to_subscribe_streams,
-                                        "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
-                                    });
-                                    let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                                    for (idx, chunk) in to_subscribe_streams.chunks(50).enumerate() {
+                                        let sub_msg = serde_json::json!({
+                                            "method": "SUBSCRIBE",
+                                            "params": chunk,
+                                            "id": idx + 100
+                                        });
+                                        let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                                    }
                                 }
 
                                 if !to_unsubscribe_streams.is_empty() {
                                     info!("Aster DEX: Unsubscribing from {} streams", to_unsubscribe_streams.len());
-                                    let unsub_msg = serde_json::json!({
-                                        "method": "UNSUBSCRIBE",
-                                        "params": to_unsubscribe_streams,
-                                        "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + 1
-                                    });
-                                    let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
+                                    for (idx, chunk) in to_unsubscribe_streams.chunks(50).enumerate() {
+                                        let unsub_msg = serde_json::json!({
+                                            "method": "UNSUBSCRIBE",
+                                            "params": chunk,
+                                            "id": idx + 500
+                                        });
+                                        let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
+                                    }
                                 }
 
                                 current_ids = new_ids;

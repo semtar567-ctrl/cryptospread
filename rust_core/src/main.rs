@@ -167,6 +167,51 @@ async fn main() -> anyhow::Result<()> {
         collector.run_dynamic(&mut bitmart_wl_rx).await;
     });
 
+    // Запуск HTX Futures коллектора
+    let htx_config = config.clone();
+    let htx_engine = Arc::clone(&engine);
+    let mut htx_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::htx_futures::HtxFuturesCollector::new(htx_config, htx_engine);
+        collector.run_dynamic(&mut htx_wl_rx).await;
+    });
+
+    // Запуск dYdX v4 Futures коллектора
+    let dydx_config = config.clone();
+    let dydx_engine = Arc::clone(&engine);
+    let mut dydx_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::dydx_futures::DydxFuturesCollector::new(dydx_config, dydx_engine);
+        collector.run_dynamic(&mut dydx_wl_rx).await;
+    });
+
+    // Запуск LBank Futures коллектора
+    let lbank_config = config.clone();
+    let lbank_engine = Arc::clone(&engine);
+    let mut lbank_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::lbank_futures::LbankFuturesCollector::new(lbank_config, lbank_engine);
+        collector.run_dynamic(&mut lbank_wl_rx).await;
+    });
+
+    // Запуск XT Futures коллектора
+    let xt_config = config.clone();
+    let xt_engine = Arc::clone(&engine);
+    let mut xt_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::xt_futures::XtFuturesCollector::new(xt_config, xt_engine);
+        collector.run_dynamic(&mut xt_wl_rx).await;
+    });
+
+    // Запуск CoinEx Futures коллектора
+    let coinex_config = config.clone();
+    let coinex_engine = Arc::clone(&engine);
+    let mut coinex_wl_rx = whitelist_tx.subscribe();
+    tokio::spawn(async move {
+        let mut collector = collectors::coinex_futures::CoinexFuturesCollector::new(coinex_config, coinex_engine);
+        collector.run_dynamic(&mut coinex_wl_rx).await;
+    });
+
     // Запуск основного цикла аналитики (раз в секунду)
     let tick_engine = Arc::clone(&engine);
     tokio::spawn(async move {
@@ -175,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    info!("Rust Core initialized. Binance, Bybit, OKX, MEXC, Bitget, Gate.io, BingX, KuCoin, Hyperliquid, Aster DEX and BitMart collectors started.");
+    info!("Rust Core initialized. Binance, Bybit, OKX, MEXC, Bitget, Gate.io, BingX, KuCoin, Hyperliquid, Aster DEX, BitMart, HTX, dYdX, LBank, XT and CoinEx collectors started.");
     
     // Временная заглушка, чтобы main не завершался сразу
     tokio::signal::ctrl_c().await?;

@@ -490,3 +490,315 @@
 - **Signal Engine**: ALIVE (PID 13228)
 - **Telegram Bot**: ALIVE (PID 3804)
 - **Volume Monitor**: ALIVE (PID 14004)
+
+## Hourly Status Update: 28.07.2026 10:52
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 10:55
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 11:55
+- **Rust Core**: ALIVE (PID 22060)
+- **Signal Engine**: ALIVE (PID 4636)
+- **Telegram Bot**: ALIVE (PID 1352)
+- **Volume Monitor**: ALIVE (PID 1656)
+
+## Hourly Status Update: 28.07.2026 12:33
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 12:42
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 12:45
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 12:52
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 12:58
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 13:22
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 13:23
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 13:24
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 13:25
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 13:25
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 14:26
+- **Rust Core**: ALIVE (PID 9756)
+- **Signal Engine**: ALIVE (PID 7084)
+- **Telegram Bot**: ALIVE (PID 10304)
+- **Volume Monitor**: ALIVE (PID 10100)
+
+## Hourly Status Update: 28.07.2026 17:06
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 17:22
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 17:25
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 17:34
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 17:39
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 17:47
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 28.07.2026 18:47
+- **Rust Core**: ALIVE (PID 4336)
+- **Signal Engine**: ALIVE (PID 7696)
+- **Telegram Bot**: ALIVE (PID 11428)
+- **Volume Monitor**: ALIVE (PID 7684)
+
+## Hourly Status Update: 01.08.2026 00:07
+- **Rust Core**: ALIVE (PID 4336)
+- **Signal Engine**: ALIVE (PID 7696)
+- **Telegram Bot**: ALIVE (PID 11428)
+- **Volume Monitor**: ALIVE (PID 7684)
+
+## Hourly Status Update: 02.08.2026 12:08
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 12:23
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 12:29
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 12:34
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 12:35
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 12:36
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 13:36
+- **Rust Core**: ALIVE (PID 5636)
+- **Signal Engine**: ALIVE (PID 6436)
+- **Telegram Bot**: ALIVE (PID 10352)
+- **Volume Monitor**: ALIVE (PID 2008)
+
+## Hourly Status Update: 02.08.2026 14:27
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 15:02
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 15:14
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 15:25
+- **Rust Core**: DEAD
+- **Signal Engine**: DEAD
+- **Telegram Bot**: DEAD
+- **Volume Monitor**: DEAD
+
+## Hourly Status Update: 02.08.2026 16:25
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 02.08.2026 17:26
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 02.08.2026 18:26
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 02.08.2026 19:26
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 02.08.2026 20:27
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 02.08.2026 21:27
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 02.08.2026 22:27
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 02.08.2026 23:27
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 00:28
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 01:28
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 02:28
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 03:29
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 04:29
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 05:29
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 06:30
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 07:30
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 03.08.2026 08:30
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 04.08.2026 21:21
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)
+
+## Hourly Status Update: 04.08.2026 23:05
+- **Rust Core**: ALIVE (PID 19804)
+- **Signal Engine**: ALIVE (PID 2896)
+- **Telegram Bot**: ALIVE (PID 12296)
+- **Volume Monitor**: ALIVE (PID 13392)

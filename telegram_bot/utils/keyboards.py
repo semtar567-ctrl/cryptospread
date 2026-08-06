@@ -52,8 +52,7 @@ def get_futures_settings_keyboard(settings):
         
         # Объем сделки (Рабочий объем)
         [InlineKeyboardButton(text="💰 Объем сделки (Ликвидность):", callback_data="none")],
-        [InlineKeyboardButton(text=get_on_off(settings.filter_slippage_enabled), callback_data="toggle_filter_slippage"),
-         InlineKeyboardButton(text=f"🌐 >${settings.working_volume_usd:g}", callback_data="edit_work_vol")],
+        [InlineKeyboardButton(text=f"🌐 >${settings.working_volume_usd:g}", callback_data="edit_work_vol")],
         
         # Объем за 24ч
         [InlineKeyboardButton(text="📈 Объем за 24ч:", callback_data="none")],
@@ -124,7 +123,12 @@ def get_ex_link(exchange: str, symbol: str) -> str:
         "kucoinfutures": f"https://www.kucoin.com/trade/futures/{symbol}M",
         "hyperliquid": f"https://app.hyperliquid.xyz/trade/{symbol}",
         "asterdex": f"https://asterdex.com/en/futures/{symbol}",
-        "bitmart": f"https://www.bitmart.com/trade/en-US?symbol={symbol}&type=contract"
+        "bitmart": f"https://www.bitmart.com/trade/en-US?symbol={symbol}&type=contract",
+        "htx": f"https://www.htx.com/trade/{symbol.lower()}_usdt",
+        "dydx": f"https://dydx.trade/trade/{symbol.replace('USDT', '').replace('USD', '')}-USD",
+        "lbank": f"https://www.lbank.com/futures/{symbol.lower()}/",
+        "xt": f"https://www.xt.com/en/futures/trade/{symbol.lower()}",
+        "coinexfutures": f"https://www.coinex.com/en/futures/market/{symbol}"
     }.get(ex, "#")
 
 def format_time_to_funding(ts_ms) -> str:
@@ -154,6 +158,19 @@ def format_time_to_funding(ts_ms) -> str:
         return f"{time_str} (через {hours}ч {minutes}м)"
     except: 
         return "н/д"
+
+def format_vol_usd(vol: float) -> str:
+    try:
+        val = float(vol or 0.0)
+    except (ValueError, TypeError):
+        val = 0.0
+
+    if val >= 1_000_000:
+        return f"${val / 1e6:.2f}M"
+    elif val >= 1_000:
+        return f"${val / 1e3:.1f}K"
+    else:
+        return f"${val:.0f}"
 
 def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
     """
@@ -191,13 +208,13 @@ def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
         f'<a href="{get_ex_link(buy_ex, symbol)}">{buy_ex_upper} Futures</a>\n'
         f"Цена: {s['buy_price']:.5f}\n"
         f"Фандинг: {s['buy_funding']:.3f}% | {format_time_to_funding(s['buy_next_f'])}\n"
-        f"Объем 24ч: ${s['buy_vol_24h']/1e6:.1f}K\n"
+        f"Объем 24ч: {format_vol_usd(s.get('buy_vol_24h', 0))}\n"
         f"Проскальзывание: {s['buy_slip']:.3f}%{warn_b}\n\n"
         f"🟥 <b>ШОРТ НА ФЬЮЧАХ:</b>\n"
         f'<a href="{get_ex_link(sell_ex, symbol)}">{sell_ex_upper} Futures</a>\n'
         f"Цена: {s['sell_price']:.5f}\n"
         f"Фандинг: {s['sell_funding']:.3f}% | {format_time_to_funding(s['sell_next_f'])}\n"
-        f"Объем 24ч: ${s['sell_vol_24h']/1e6:.1f}K\n"
+        f"Объем 24ч: {format_vol_usd(s.get('sell_vol_24h', 0))}\n"
         f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
         f'📈 <a href="{tv_link}">График спреда 🔗</a>\n'
         f"==========="

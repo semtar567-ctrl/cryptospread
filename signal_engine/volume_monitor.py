@@ -41,13 +41,19 @@ class MetaMonitor:
             "kucoinfutures": ccxt.kucoinfutures({"options": {"defaultType": "swap"}}),
             "hyperliquid": None,
             "asterdex": None,
-            "bitmart": ccxt.bitmart({"options": {"defaultType": "swap"}})
+            "bitmart": ccxt.bitmart({"options": {"defaultType": "swap"}}),
+            "htx": ccxt.htx({"options": {"defaultType": "swap"}}),
+            "dydx": None,
+            "lbank": ccxt.lbank({"options": {"defaultType": "swap"}}),
+            "xt": ccxt.xt({"options": {"defaultType": "swap"}}),
+            "coinexfutures": ccxt.coinex({"options": {"defaultType": "swap"}})
         }
         
     async def init_sessions(self):
+        self.session = get_custom_session()
         for ex in self.exchanges.values():
             if ex is not None:
-                ex.session = get_custom_session()
+                ex.session = self.session
 
     async def fetch_exchange_meta(self, exchange_id, exchange):
         """
@@ -58,9 +64,14 @@ class MetaMonitor:
             return await self.fetch_hyperliquid_meta()
         if exchange_id == "asterdex":
             return await self.fetch_asterdex_meta()
+        if exchange_id == "dydx":
+            return await self.fetch_dydx_meta()
         try:
             markets = await exchange.load_markets()
-            tickers = await exchange.fetch_tickers()
+            if exchange_id == "coinexfutures":
+                tickers = await exchange.fetch_tickers(params={"type": "swap"})
+            else:
+                tickers = await exchange.fetch_tickers()
             
             # Получаем фандинг (опционально, если биржа поддерживает)
             funding_rates = {}
@@ -101,7 +112,7 @@ class MetaMonitor:
                 # 3. Активные торги
                 if not market.get("swap"): continue
                 if market.get("settle") not in ["USDT", "USDC"]: continue
-                if not market.get("active"): continue
+                if market.get("active") is False: continue
 
                 # 4. Исключаем Pre-Market, Pre-IPO, RWA (акции), TradFi и не-бессрочные контракты
                 info = market.get("info", {})
@@ -136,18 +147,18 @@ class MetaMonitor:
                 
                 # Получаем объем из тикера
                 ticker = tickers.get(symbol, {})
-                quote_vol = ticker.get("quoteVolume", 0)
+                quote_vol = ticker.get("quoteVolume") or (float(ticker["info"].get("value", 0)) if "info" in ticker and ticker["info"].get("value") else 0)
                 
-                # Если объем нулевой, пробуем вытащить из info (специфично для OKX)
+                # Если объем нулевой, пробуем вытащить из info (специфично для OKX / CoinEx)
                 if not quote_vol and "info" in ticker:
-                    quote_vol = float(ticker["info"].get("volCcy24h", 0))
+                    quote_vol = float(ticker["info"].get("volCcy24h", 0)) or float(ticker["info"].get("value", 0))
 
                 results[unified] = {
                     "exchange_id_symbol": market["id"], # ВАЖНО: Точный ID биржи (напр. BTC-USDT-SWAP)
-                    "volume_24h": quote_vol,
-                    "funding_rate": funding_rates.get(symbol, 0),
+                    "volume_24h": quote_vol or 0.0,
+                    "funding_rate": funding_rates.get(symbol) or 0.0,
                     "next_funding_at": next_funding_times.get(symbol),
-                    "last_price": ticker.get("last", 0),
+                    "last_price": ticker.get("last") or 0.0,
                     "taker_fee": market.get("taker") if market.get("taker") is not None else 0.0006,
                     "multiplier": total_multiplier,
                     "contract_size": float(market.get("contractSize") or 1.0)
@@ -174,12 +185,12 @@ class MetaMonitor:
         payload = {"type": "metaAndAssetCtxs"}
 
         try:
-            async with get_custom_session() as session:
-                async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Hyperliquid API error status: {resp.status}")
-                        return {}
-                    data = await resp.json()
+            session = getattr(self, "session", None) or get_custom_session()
+            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.error(f"Hyperliquid API error status: {resp.status}")
+                    return {}
+                data = await resp.json()
 
             if not isinstance(data, list) or len(data) < 2:
                 logger.error("Invalid response format from Hyperliquid info endpoint")
@@ -255,12 +266,12 @@ class MetaMonitor:
         funding_url = "https://fapi.asterdex.com/fapi/v1/premiumIndex"
 
         try:
-            async with get_custom_session() as session:
-                async with session.get(ticker_url, timeout=10) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Aster DEX ticker API error status: {resp.status}")
-                        return {}
-                    tickers_data = await resp.json()
+            session = getattr(self, "session", None) or get_custom_session()
+            async with session.get(ticker_url, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.error(f"Aster DEX ticker API error status: {resp.status}")
+                    return {}
+                tickers_data = await resp.json()
 
                 funding_map = {}
                 next_funding_map = {}
@@ -341,17 +352,56 @@ class MetaMonitor:
             logger.error("Error fetching meta from asterdex", error=str(e))
             return {}
 
+    async def fetch_dydx_meta(self):
+        """
+        Загружает мета-данные бессрочных фьючерсов dYdX v4 DEX напрямую из REST API:
+        https://indexer.dydx.trade/v4/perpetualMarkets
+        """
+        url = "https://indexer.dydx.trade/v4/perpetualMarkets"
+        try:
+            session = getattr(self, "session", None) or get_custom_session()
+            async with session.get(url, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.error(f"dYdX REST error: HTTP {resp.status}")
+                    return {}
+                data = await resp.json()
+                markets = data.get("markets", {})
+                results = {}
+                for ticker, m in markets.items():
+                    if not ticker.endswith("-USD"):
+                        continue
+                    base = ticker[:-4].upper()
+                    unified = f"{base}USDT"
+                    price = float(m.get("oraclePrice") or m.get("indexPrice") or 0.0)
+                    vol = float(m.get("volume24H") or 0.0)
+                    results[unified] = {
+                        "exchange_id_symbol": ticker,
+                        "volume_24h": vol,
+                        "funding_rate": 0.0,
+                        "next_funding_at": None,
+                        "last_price": price,
+                        "taker_fee": 0.0005,
+                        "multiplier": 1.0,
+                        "contract_size": 1.0
+                    }
+                logger.info(f"Fetched {len(results)} swaps from dydx")
+                return results
+        except Exception as e:
+            logger.error("Error fetching meta from dydx", error=str(e))
+            return {}
+
     async def update_all(self):
         logger.info("Meta Monitor (Strict Mode) started")
         while True:
             try:
                 # 1. Обновляем глобальный порог спреда
                 async with AsyncSessionLocal() as session:
-                    stmt = select(UserSetting.min_spread_percent, UserSetting.min_volume_24h)
+                    stmt = select(UserSetting.min_spread_percent, UserSetting.min_volume_24h, UserSetting.filter_volume_enabled)
                     res = await session.execute(stmt)
                     settings_list = res.all()
                     min_spread = min([s[0] for s in settings_list]) if settings_list else 0.1
-                    min_vol_threshold = min([s[1] for s in settings_list]) if settings_list else 1_000_000
+                    enabled_vols = [s[1] for s in settings_list if s[2]]
+                    min_vol_threshold = min(enabled_vols) if enabled_vols else 0.0
                     await self.redis.set("global_min_spread", str(min_spread))
 
                 # 2. Собираем данные параллельно
@@ -380,12 +430,12 @@ class MetaMonitor:
                 final_whitelist = {}
                 for unified, exs in symbol_to_exchanges.items():
                     # Защита от коллизий тикеров: очистка бирж-выбросов по медианной цене
-                    valid_prices = [full_map[unified][ex_id]["last_price"] for ex_id in exs if full_map[unified][ex_id].get("last_price", 0) > 0]
+                    valid_prices = [full_map[unified][ex_id]["last_price"] for ex_id in exs if (full_map[unified][ex_id].get("last_price") or 0) > 0]
                     if len(valid_prices) >= 2:
                         sorted_p = sorted(valid_prices)
                         median_p = sorted_p[len(sorted_p) // 2]
                         if median_p > 0:
-                            filtered_exs = [ex_id for ex_id in exs if full_map[unified][ex_id].get("last_price", 0) > 0 and 0.25 <= (full_map[unified][ex_id]["last_price"] / median_p) <= 4.0]
+                            filtered_exs = [ex_id for ex_id in exs if (full_map[unified][ex_id].get("last_price") or 0) > 0 and 0.25 <= (full_map[unified][ex_id]["last_price"] / median_p) <= 4.0]
                             if len(filtered_exs) >= 2:
                                 exs = filtered_exs
 
@@ -421,6 +471,8 @@ class MetaMonitor:
         for ex in self.exchanges.values():
             if ex is not None:
                 await ex.close()
+        if hasattr(self, "session") and self.session and not self.session.closed:
+            await self.session.close()
 
 async def main():
     monitor = MetaMonitor()

@@ -46,8 +46,8 @@ impl SpreadEngine {
             state: DashMap::new(),
             redis_client,
             user_manager,
-            cached_users: StdMutex::new((Vec::new(), Instant::now() - Duration::from_secs(600))),
-            needs_refresh: std::sync::atomic::AtomicBool::new(false),
+            cached_users: StdMutex::new((Vec::new(), Instant::now().checked_sub(Duration::from_secs(600)).unwrap_or_else(Instant::now))),
+            needs_refresh: std::sync::atomic::AtomicBool::new(true),
             redis_conn: TokioMutex::new(None),
             log_cooldown: StdMutex::new(HashMap::new()),
             msg_count: AtomicU64::new(0),
@@ -394,11 +394,17 @@ impl SpreadEngine {
 
             match self.get_connection().await {
                 Ok(mut conn) => {
-                    let res: anyhow::Result<()> = conn.xadd(
-                        &self.config.redis.stream_name,
-                        "*",
-                        &[("data", signal.to_string())]
-                    ).await.map_err(|e| anyhow::anyhow!(e));
+                    let res: anyhow::Result<()> = redis::cmd("XADD")
+                        .arg(&self.config.redis.stream_name)
+                        .arg("MAXLEN")
+                        .arg("~")
+                        .arg(5000)
+                        .arg("*")
+                        .arg("data")
+                        .arg(signal.to_string())
+                        .query_async(&mut conn)
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e));
 
                     if let Err(e) = res {
                         error!("Failed to write signal to Redis: {}. Invalidating connection.", e);

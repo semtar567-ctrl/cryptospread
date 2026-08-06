@@ -393,11 +393,19 @@ async def start_command(message: types.Message):
             user = User(user_id=user_id, username=username, is_admin=True)
             session.add(user)
             session.add(UserSetting(user_id=user_id, trade_type="futures_futures"))
-            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart"]:
+            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart", "htx", "dydx", "lbank", "xt", "coinexfutures"]:
                 session.add(UserExchange(user_id=user_id, exchange_id=ex_id))
             await session.commit()
             await message.answer(f"👋 Добро пожаловать, {username or 'друг'}!", reply_markup=get_reply_main_menu())
         else:
+            # Проверяем и добавляем новые биржи (если они были добавлены в систему позже)
+            stmt_ex = select(UserExchange).where(UserExchange.user_id == user_id)
+            result_ex = await session.execute(stmt_ex)
+            existing_ex = {ex.exchange_id for ex in result_ex.scalars().all()}
+            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart", "htx", "dydx", "lbank", "xt", "coinexfutures"]:
+                if ex_id not in existing_ex:
+                    session.add(UserExchange(user_id=user_id, exchange_id=ex_id))
+            await session.commit()
             await message.answer(f"👋 С возвращением!", reply_markup=get_reply_main_menu())
 
 # Хендлеры нижней панели (Reply Keyboard)
@@ -433,7 +441,7 @@ async def exchanges_settings_callback(callback: types.CallbackQuery):
         result = await session.execute(stmt)
         existing_exchanges = {ex.exchange_id for ex in result.scalars().all()}
         
-        required_exchanges = ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart"]
+        required_exchanges = ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart", "htx", "dydx", "lbank", "xt", "coinexfutures"]
         added = False
         for ex_id in required_exchanges:
             if ex_id not in existing_exchanges:
@@ -837,9 +845,8 @@ async def main():
     dp.callback_query.register(sympage_callback, F.data.startswith("sympage:"))
     dp.callback_query.register(symref_callback, F.data.startswith("symref:"))
     
-    # Заглушки для типов торговли
-    dp.callback_query.register(placeholder_callback, F.data.startswith("trade_"))
-    dp.callback_query.register(placeholder_callback, F.data == "hint")
+    # Заглушки для типов торговли и информационных кнопок
+    dp.callback_query.register(placeholder_callback, F.data.startswith("trade_") | F.data.in_({"none", "placeholder", "hint"}))
 
     logger.info("Starting Telegram Bot...")
     try:

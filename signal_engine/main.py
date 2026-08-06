@@ -22,6 +22,8 @@ from aiohttp.resolver import ThreadedResolver
 # Фикс DNS и Event Loop для Windows
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
 
 logger = structlog.get_logger()
 
@@ -127,11 +129,17 @@ class SignalEngine:
             if not metrics: continue
 
             # 2. Мета-данные
-            meta_key_buy = f"meta:{buy_ex}:{symbol.replace('/', '').replace('-', '')}"
-            meta_key_sell = f"meta:{sell_ex}:{symbol.replace('/', '').replace('-', '')}"
+            clean_sym = symbol.replace('/', '').replace('-', '')
+            meta_key_buy = f"meta:{buy_ex}:{symbol}"
+            meta_key_sell = f"meta:{sell_ex}:{symbol}"
             
             b_meta_raw = await self.redis.get(meta_key_buy)
+            if not b_meta_raw:
+                b_meta_raw = await self.redis.get(f"meta:{buy_ex}:{clean_sym}")
+                
             s_meta_raw = await self.redis.get(meta_key_sell)
+            if not s_meta_raw:
+                s_meta_raw = await self.redis.get(f"meta:{sell_ex}:{clean_sym}")
             
             funding_buy = 0.0
             funding_sell = 0.0
@@ -241,13 +249,26 @@ class SignalEngine:
                 
                 min_spread = user_settings.min_spread_percent if user_settings else 0.1
                 filter_spread_enabled = user_settings.filter_spread_enabled if user_settings else True
+                min_volume_24h = user_settings.min_volume_24h if user_settings else 1_000_000.0
+                filter_volume_enabled = user_settings.filter_volume_enabled if user_settings else True
 
             is_above_threshold = True
             if filter_spread_enabled:
                 if vwap_net_spread < min_spread:
                     is_above_threshold = False
 
+            if filter_volume_enabled:
+                pair_min_vol = min(vol_24h_buy, vol_24h_sell)
+                if pair_min_vol < min_volume_24h:
+                    is_above_threshold = False
+
             if is_above_threshold:
+                logger.info(f"[ALERT TRIGGERED]: {symbol} ({buy_ex} -> {sell_ex}) Net: {vwap_net_spread:.2f}% for user {uid}")
+                # Очистка устаревших ключей кулдауна (старше 120 сек) для предотвращения утечки памяти
+                if len(self.last_alert_sent) > 200:
+                    cutoff = now - 120
+                    self.last_alert_sent = {k: v for k, v in self.last_alert_sent.items() if v > cutoff}
+
                 # 1. Анти-спам (60 секунд на монету для каждого юзера)
                 sym_clean = symbol.replace("/", "").replace("-", "")
                 cooldown_key = (uid, sym_clean)

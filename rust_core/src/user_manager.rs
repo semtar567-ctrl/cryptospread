@@ -8,7 +8,15 @@ pub struct UserManager {
 
 impl UserManager {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = PgPool::connect(database_url).await?;
+        let clean_url = if let Some(stripped) = database_url.strip_prefix("postgresql+asyncpg://") {
+            format!("postgres://{}", stripped)
+        } else if let Some(stripped) = database_url.strip_prefix("postgresql://") {
+            format!("postgres://{}", stripped)
+        } else {
+            database_url.to_string()
+        };
+
+        let pool = PgPool::connect(&clean_url).await?;
         Ok(Self { pool })
     }
 

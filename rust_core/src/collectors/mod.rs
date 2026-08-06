@@ -9,3 +9,8 @@ pub mod kucoin_futures;
 pub mod hyperliquid_futures;
 pub mod asterdex_futures;
 pub mod bitmart_futures;
+pub mod htx_futures;
+pub mod dydx_futures;
+pub mod lbank_futures;
+pub mod xt_futures;
+pub mod coinex_futures;
