@@ -4,6 +4,7 @@ import json
 import logging
 import structlog
 import aiohttp.resolver
+from collections import defaultdict
 import sys
 import os
 
@@ -58,22 +59,24 @@ async def show_categories_callback(callback: types.CallbackQuery):
         )
 
 async def category_futures_futures_callback(callback: types.CallbackQuery):
-    from collections import defaultdict
-    from redis.asyncio import Redis
-    redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+    from telegram_bot.utils.redis_sync import get_redis_client
+    redis = get_redis_client()
     try:
-        keys = await redis.keys("current_spread:futures_futures:*")
+        keys = []
+        async for key in redis.scan_iter("current_spread:futures_futures:*"):
+            keys.append(key)
         by_symbol = defaultdict(list)
-        for key in keys:
-            data = await redis.get(key)
-            if data:
-                try:
-                    s = json.loads(data)
-                    sym = s.get("symbol")
-                    if sym:
-                        by_symbol[sym].append(s)
-                except Exception:
-                    pass
+        if keys:
+            values = await redis.mget(keys)
+            for data in values:
+                if data:
+                    try:
+                        s = json.loads(data)
+                        sym = s.get("symbol")
+                        if sym:
+                            by_symbol[sym].append(s)
+                    except Exception:
+                        pass
 
         symbol_best_pairs = []
         for symbol, pairs in by_symbol.items():
@@ -108,8 +111,9 @@ async def category_futures_futures_callback(callback: types.CallbackQuery):
 
         kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
         await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    finally:
-        await redis.aclose()
+    except Exception as e:
+        logger.error("Error in category_futures_futures_callback", error=str(e))
+        await callback.answer("Ошибка при загрузке связок", show_alert=True)
 
 
 async def show_symbol_card_callback(callback: types.CallbackQuery):
@@ -128,18 +132,21 @@ async def show_symbol_card_callback(callback: types.CallbackQuery):
         await callback.answer("Ошибка формата данных", show_alert=True)
         return
 
-    from redis.asyncio import Redis
-    redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+    from telegram_bot.utils.redis_sync import get_redis_client
+    redis = get_redis_client()
     try:
-        keys = await redis.keys(f"current_spread:futures_futures:{symbol}:*")
+        keys = []
+        async for key in redis.scan_iter(f"current_spread:futures_futures:{symbol}:*"):
+            keys.append(key)
         pairs = []
-        for key in keys:
-            data_raw = await redis.get(key)
-            if data_raw:
-                try:
-                    pairs.append(json.loads(data_raw))
-                except Exception:
-                    pass
+        if keys:
+            data_list = await redis.mget(keys)
+            for data_raw in data_list:
+                if data_raw:
+                    try:
+                        pairs.append(json.loads(data_raw))
+                    except Exception:
+                        pass
 
         if not pairs:
             await callback.answer("⚠️ Эта связка больше не активна (спред ушел).", show_alert=True)
@@ -171,8 +178,9 @@ async def show_symbol_card_callback(callback: types.CallbackQuery):
                 await callback.answer()
             else:
                 raise e
-    finally:
-        await redis.aclose()
+    except Exception as e:
+        logger.error("Error in show_symbol_card_callback", error=str(e))
+        await callback.answer("Ошибка при отображении карточки связки", show_alert=True)
 
 show_spread_details_callback = show_symbol_card_callback
 
@@ -715,17 +723,20 @@ async def symref_callback(callback: types.CallbackQuery):
 
     user_id = callback.from_user.id
 
-    from redis.asyncio import Redis
-    redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+    from telegram_bot.utils.redis_sync import get_redis_client
+    redis = get_redis_client()
     try:
-        spread_keys = await redis.keys(f"current_spread:futures_futures:{symbol}:*")
+        spread_keys = []
+        async for skey in redis.scan_iter(f"current_spread:futures_futures:{symbol}:*"):
+            spread_keys.append(skey)
         fresh_pairs = []
-        for skey in spread_keys:
-            sdata = await redis.get(skey)
-            if sdata:
-                try:
-                    fresh_pairs.append(json.loads(sdata))
-                except: pass
+        if spread_keys:
+            sdata_list = await redis.mget(spread_keys)
+            for sdata in sdata_list:
+                if sdata:
+                    try:
+                        fresh_pairs.append(json.loads(sdata))
+                    except: pass
 
         key = f"symbol_signal:{user_id}:{symbol}"
         raw_data = await redis.get(key)
@@ -767,8 +778,6 @@ async def symref_callback(callback: types.CallbackQuery):
     except Exception as e:
         logger.error("Error in symref_callback", error=str(e))
         await callback.answer("Ошибка при обновлении данных.", show_alert=True)
-    finally:
-        await redis.aclose()
 
 
 class IPv4Session(AiohttpSession):
@@ -852,6 +861,8 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
+        from telegram_bot.utils.redis_sync import close_redis_client
+        await close_redis_client()
         await bot.session.close()
 
 if __name__ == "__main__":

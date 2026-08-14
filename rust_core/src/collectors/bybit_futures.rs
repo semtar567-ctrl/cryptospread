@@ -226,9 +226,9 @@ impl BybitFuturesCollector {
             }
         }
         if descending {
-            current.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            current.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         } else {
-            current.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            current.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         }
         current.truncate(50);
     }

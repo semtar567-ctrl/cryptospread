@@ -121,11 +121,11 @@ impl DydxFuturesCollector {
                                                 if clean.ends_with("-USD") {
                                                     clean
                                                 } else if clean.ends_with("-USDT") {
-                                                    format!("{}-USD", clean.strip_suffix("-USDT").unwrap())
+                                                    format!("{}-USD", clean.strip_suffix("-USDT").unwrap_or(""))
                                                 } else if clean.ends_with("USD") {
-                                                    format!("{}-USD", clean.strip_suffix("USD").unwrap().trim_end_matches('-'))
+                                                    format!("{}-USD", clean.strip_suffix("USD").unwrap_or("").trim_end_matches('-'))
                                                 } else if clean.ends_with("USDT") {
-                                                    format!("{}-USD", clean.strip_suffix("USDT").unwrap().trim_end_matches('-'))
+                                                    format!("{}-USD", clean.strip_suffix("USDT").unwrap_or("").trim_end_matches('-'))
                                                 } else {
                                                     format!("{}-USD", clean.trim_end_matches('-'))
                                                 }
@@ -269,8 +269,8 @@ impl DydxFuturesCollector {
                 .unwrap_or_else(|| {
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0)
                 });
 
             let update = OrderBookUpdate {

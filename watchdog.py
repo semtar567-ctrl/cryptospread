@@ -21,7 +21,17 @@ STABILITY_FILE = os.path.join(PROJECT_ROOT, "STABILITY_REPORT.md")
 if not os.path.exists(LOGS_DIR):
     os.makedirs(LOGS_DIR)
 
+LAST_AUDITED_POS = {}
+LAST_INCIDENTS = {}
+
 def log_incident(component, event_type, description):
+    now_ts = time.time()
+    key = (component, event_type, description[:50])
+    last_record = LAST_INCIDENTS.get(key)
+    if last_record and (now_ts - last_record) < 300:
+        return
+    LAST_INCIDENTS[key] = now_ts
+
     timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     line = f"| {timestamp} | {component} | {event_type} | {description} |\n"
     
@@ -46,10 +56,11 @@ def update_stability_report():
         f.write(report)
 
 def is_process_running(name_part):
+    search_norm = name_part.replace('\\', '/')
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
-            cmdline = " ".join(proc.info['cmdline'] or [])
-            if name_part in cmdline and proc.pid != os.getpid():
+            cmdline = " ".join(proc.info['cmdline'] or []).replace('\\', '/')
+            if search_norm in cmdline and proc.pid != os.getpid():
                 return proc
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -61,33 +72,45 @@ def start_process(name, command):
     
     # Открываем файл в режиме добавления с UTF-8
     log_file = open(log_path, "a", encoding="utf-8")
-    
-    print(f"[*] Starting {name}, logging to {log_path}...")
-    return subprocess.Popen(
-        command, 
-        cwd=PROJECT_ROOT, 
-        stdout=log_file, 
-        stderr=subprocess.STDOUT, 
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-    )
+    try:
+        print(f"[*] Starting {name}, logging to {log_path}...")
+        proc = subprocess.Popen(
+            command, 
+            cwd=PROJECT_ROOT, 
+            stdout=log_file, 
+            stderr=subprocess.STDOUT, 
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+        return proc
+    finally:
+        log_file.close()
 
 def audit_logs():
-    """Сканирует последние строки логов на наличие ERROR."""
+    """Сканирует только новые строки логов на наличие ERROR без считывания всего файла."""
     for name in PROCESSES.keys():
         log_file_name = f"{name.lower().replace(' ', '_')}.log"
         log_path = os.path.join(LOGS_DIR, log_file_name)
         
         if os.path.exists(log_path):
             try:
-                with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                    # Читаем последние 50 строк
-                    lines = f.readlines()[-50:]
-                    for line in lines:
-                        if "ERROR" in line.upper() and "[AUDIT IGNORE]" not in line:
-                            # Чтобы не спамить об одной и той же ошибке, можно добавить логику проверки
-                            if "ClientConnectorError" in line: # Пример частой ошибки
-                                continue
-                            log_incident(name, "LOG_ERROR", line.strip()[:100])
+                file_size = os.path.getsize(log_path)
+                last_pos = LAST_AUDITED_POS.get(log_file_name, max(0, file_size - 8192))
+                if file_size < last_pos:
+                    last_pos = max(0, file_size - 8192)
+                
+                with open(log_path, "rb") as f:
+                    f.seek(last_pos)
+                    chunk = f.read()
+                    LAST_AUDITED_POS[log_file_name] = f.tell()
+                    
+                    if chunk:
+                        text = chunk.decode("utf-8", errors="ignore")
+                        lines = text.splitlines()[-50:]
+                        for line in lines:
+                            if "ERROR" in line.upper() and "[AUDIT IGNORE]" not in line:
+                                if "ClientConnectorError" in line or "Flood control" in line:
+                                    continue
+                                log_incident(name, "LOG_ERROR", line.strip()[:100])
             except Exception:
                 pass
 

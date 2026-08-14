@@ -1,3 +1,4 @@
+import math
 import sys
 import os
 import asyncio
@@ -26,9 +27,20 @@ def get_custom_session():
     connector = aiohttp.TCPConnector(resolver=ThreadedResolver(), family=socket.AF_INET)
     return aiohttp.ClientSession(connector=connector)
 
+def _safe_float(val, default=0.0):
+    if val is None:
+        return default
+    try:
+        res = float(val)
+        if math.isnan(res) or math.isinf(res):
+            return default
+        return res
+    except (ValueError, TypeError):
+        return default
+
 class MetaMonitor:
     def __init__(self):
-        self.redis = Redis(host="127.0.0.1", port=6380, decode_responses=True)
+        self.redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
         # Инициализируем биржи с флагами для фьючерсов
         self.exchanges = {
             "binance": ccxt.binance({"options": {"defaultType": "future"}}),
@@ -77,32 +89,71 @@ class MetaMonitor:
             funding_rates = {}
             next_funding_times = {}
             
-            # 1. Сначала пробуем вытащить фандинг из тикеров (самый быстрый и надежный способ для Bybit/MEXC)
+            # 1. Сначала пробуем вытащить фандинг из тикеров (Bybit, MEXC, Gate.io, KuCoin, Bitget, LBank)
             for symbol, ticker in tickers.items():
                 try:
                     info = ticker.get("info", {})
-                    # Bybit & MEXC & OKX часто кладут fundingRate в info тикера
-                    fr = info.get("fundingRate") or info.get("lastFundingRate")
+                    # Bybit & MEXC & Bitget & OKX & Gate.io & KuCoin & LBank
+                    fr_raw = (
+                        info.get("fundingRate") 
+                        if info.get("fundingRate") is not None 
+                        else (
+                            info.get("lastFundingRate") 
+                            if info.get("lastFundingRate") is not None 
+                            else (
+                                info.get("funding_rate") 
+                                if info.get("funding_rate") is not None 
+                                else (
+                                    info.get("fundingFeeRate") 
+                                    if info.get("fundingFeeRate") is not None 
+                                    else (
+                                        info.get("funding_rate_indicative") 
+                                        if info.get("funding_rate_indicative") is not None 
+                                        else ticker.get("fundingRate")
+                                    )
+                                )
+                            )
+                        )
+                    )
+                    fr = _safe_float(fr_raw, None)
                     if fr is not None:
-                        funding_rates[symbol] = float(fr)
+                        funding_rates[symbol] = fr
                     
                     # Время следующего фандинга
-                    nft = info.get("nextFundingTime") or info.get("nextSettleTime")
-                    if nft:
-                        next_funding_times[symbol] = int(nft)
+                    nft = (
+                        info.get("nextFundingTime") 
+                        if info.get("nextFundingTime") is not None 
+                        else (
+                            info.get("nextSettleTime") 
+                            if info.get("nextSettleTime") is not None 
+                            else (
+                                info.get("nextFundingRateDateTime") 
+                                if info.get("nextFundingRateDateTime") is not None 
+                                else info.get("next_funding_time")
+                            )
+                        )
+                    )
+                    if nft is not None:
+                        try:
+                            next_funding_times[symbol] = int(float(nft))
+                        except (ValueError, TypeError): pass
                 except: pass
 
-            # 2. Если данных мало, пробуем специализированный метод (для Binance/OKX)
-            if exchange_id in ["binance", "okx"]:
+            # 2. Массовый запрос фандинга для бирж с поддержкой fetch_funding_rates (Binance, OKX, BingX, HTX, CoinEx)
+            if exchange_id in ["binance", "okx", "bingx", "htx", "coinexfutures"]:
                 try:
                     funding_data = await exchange.fetch_funding_rates()
                     for symbol, data in funding_data.items():
-                        if symbol not in funding_rates:
-                            funding_rates[symbol] = data.get("fundingRate", 0)
-                        if symbol not in next_funding_times:
-                            next_funding_times[symbol] = data.get("nextFundingTimestamp")
-                except:
-                    logger.warn(f"Could not fetch bulk funding rates for {exchange_id}")
+                        if symbol not in funding_rates or funding_rates[symbol] == 0.0:
+                            fr_val = _safe_float(data.get("fundingRate"), None)
+                            if fr_val is not None:
+                                funding_rates[symbol] = fr_val
+                        if symbol not in next_funding_times or not next_funding_times[symbol]:
+                            nft_val = data.get("nextFundingTimestamp")
+                            if nft_val is not None:
+                                next_funding_times[symbol] = int(nft_val)
+                except Exception as fe:
+                    logger.warn(f"Could not fetch bulk funding rates for {exchange_id}", error=str(fe))
 
             results = {}
             for symbol, market in markets.items():
@@ -145,23 +196,25 @@ class MetaMonitor:
 
                 total_multiplier = prefix_mult
                 
-                # Получаем объем из тикера
+                # Получаем объем из тикера безопасно
                 ticker = tickers.get(symbol, {})
-                quote_vol = ticker.get("quoteVolume") or (float(ticker["info"].get("value", 0)) if "info" in ticker and ticker["info"].get("value") else 0)
-                
-                # Если объем нулевой, пробуем вытащить из info (специфично для OKX / CoinEx)
-                if not quote_vol and "info" in ticker:
-                    quote_vol = float(ticker["info"].get("volCcy24h", 0)) or float(ticker["info"].get("value", 0))
+                quote_vol = _safe_float(ticker.get("quoteVolume"))
+                if quote_vol <= 0 and isinstance(ticker.get("info"), dict):
+                    t_info = ticker["info"]
+                    quote_vol = _safe_float(t_info.get("volCcy24h")) or _safe_float(t_info.get("volUsd24h")) or _safe_float(t_info.get("value"))
+
+                fr_val = funding_rates.get(symbol)
+                funding_rate = _safe_float(fr_val) if not isinstance(fr_val, dict) else 0.0
 
                 results[unified] = {
                     "exchange_id_symbol": market["id"], # ВАЖНО: Точный ID биржи (напр. BTC-USDT-SWAP)
-                    "volume_24h": quote_vol or 0.0,
-                    "funding_rate": funding_rates.get(symbol) or 0.0,
+                    "volume_24h": quote_vol,
+                    "funding_rate": funding_rate,
                     "next_funding_at": next_funding_times.get(symbol),
-                    "last_price": ticker.get("last") or 0.0,
-                    "taker_fee": market.get("taker") if market.get("taker") is not None else 0.0006,
+                    "last_price": _safe_float(ticker.get("last")),
+                    "taker_fee": _safe_float(market.get("taker"), 0.0006),
                     "multiplier": total_multiplier,
-                    "contract_size": float(market.get("contractSize") or 1.0)
+                    "contract_size": _safe_float(market.get("contractSize"), 1.0)
                 }
                 
                 # Обновляем мета-данные в Redis немедленно для каждого инструмента
@@ -473,6 +526,9 @@ class MetaMonitor:
                 await ex.close()
         if hasattr(self, "session") and self.session and not self.session.closed:
             await self.session.close()
+        try:
+            await self.redis.aclose()
+        except Exception: pass
 
 async def main():
     monitor = MetaMonitor()

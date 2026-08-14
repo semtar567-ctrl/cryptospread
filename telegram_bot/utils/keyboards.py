@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 
 def get_reply_main_menu(is_on: bool = False):
     """Нижняя панель кнопок под полем ввода."""
@@ -190,8 +190,12 @@ def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
     buy_ex_upper = buy_ex.upper()
     sell_ex_upper = sell_ex.upper()
 
-    tv_symbol = f"{buy_ex_upper}:{symbol}.P/{sell_ex_upper}:{symbol}.P"
-    tv_link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
+    import os
+    from telegram_bot.config import settings
+    chart_base_url = (getattr(settings, "spread_chart_url", "") or os.getenv("SPREAD_CHART_URL", "")).rstrip("/")
+    if not chart_base_url:
+        chart_base_url = "https://happening-rica-plains-hose.trycloudflare.com"
+    chart_link = f"{chart_base_url}/?buy={buy_ex}&sell={sell_ex}&symbol={symbol}"
 
     warn_b = " ⚠️ Низкая ликвидность" if not s.get("buy_full", True) else ""
     warn_s = " ⚠️ Низкая ликвидность" if not s.get("sell_full", True) else ""
@@ -216,7 +220,7 @@ def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
         f"Фандинг: {s['sell_funding']:.3f}% | {format_time_to_funding(s['sell_next_f'])}\n"
         f"Объем 24ч: {format_vol_usd(s.get('sell_vol_24h', 0))}\n"
         f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
-        f'📈 <a href="{tv_link}">График спреда 🔗</a>\n'
+        f'📈 <a href="{chart_link}">График спреда 1.0000 🔗</a>\n'
         f"==========="
     )
 
@@ -225,6 +229,16 @@ def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
         text += f"\n🏛 <b>Еще {len(other_pairs)} на других биржах::</b>\n"
         for op in other_pairs:
             text += f"⚖️ {op['buy_ex'].upper()}/{op['sell_ex'].upper()}: P {op['vwap_net_spread']:.2f}%, F {op['funding_spread']:.2f}%\n"
+
+    # Ряд 0: Кнопка Telegram WebApp (только если HTTPS, иначе обычный URL)
+    if chart_link.startswith("https://"):
+        row_webapp = [
+            InlineKeyboardButton(text="📈 Открыть график спреда 1.0000 🔗", web_app=WebAppInfo(url=chart_link))
+        ]
+    else:
+        row_webapp = [
+            InlineKeyboardButton(text="📈 Открыть график спреда 1.0000 🔗", url=chart_link)
+        ]
 
     # Ряд 1: Отслеживать + Обновить
     row1 = [
@@ -241,5 +255,5 @@ def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
         InlineKeyboardButton(text=">", callback_data=f"sympage:{symbol}:{next_idx}")
     ]
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[row1, row2])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[row_webapp, row1, row2])
     return text, keyboard

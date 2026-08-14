@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     database_url: str = "sqlite+aiosqlite:///./cryptospread.db"
     log_level: str = "INFO"
+    spread_chart_url: str = "https://happening-rica-plains-hose.trycloudflare.com"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
