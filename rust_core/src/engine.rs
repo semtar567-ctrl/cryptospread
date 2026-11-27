@@ -128,35 +128,69 @@ impl SpreadEngine {
 
     pub async fn start_tick_loop(self: Arc<Self>) -> anyhow::Result<()> {
         let mut interval = tokio::time::interval(Duration::from_millis(100)); // 100ms Tick
-        info!("⏱️ Tick Engine started (100ms interval, with is_dirty optimization)");
+        let mut last_gc_run = Instant::now();
+        info!("⏱️ Tick Engine started (100ms interval, with GC every hour)");
 
         loop {
             interval.tick().await;
             
-            // Получаем список всех символов
-            let symbols: Vec<String> = self.state.iter().map(|item| item.key().clone()).collect();
-            
-            for symbol in symbols {
-                // Проверяем, есть ли изменения по этому символу
-                let is_dirty = if let Some(exchange_map) = self.state.get(&symbol) {
-                    exchange_map.iter().any(|item| item.value().is_dirty)
-                } else {
-                    false
-                };
+            // 1. Очистка старых данных (Garbage Collector) - раз в час
+            if last_gc_run.elapsed() >= Duration::from_secs(3600) {
+                self.run_garbage_collection();
+                last_gc_run = Instant::now();
+            }
 
+            // 2. Оптимизированный сбор "грязных" символов
+            // Не клонируем весь список ключей, выбираем только те, что требуют пересчета
+            let mut dirty_symbols = Vec::new();
+            for symbol_item in self.state.iter() {
+                let is_dirty = symbol_item.value().iter().any(|item| item.value().is_dirty);
                 if is_dirty {
-                    if let Err(e) = self.check_arbitrage(&symbol).await {
-                        error!("Error checking arbitrage for {}: {}", symbol, e);
-                    }
+                    dirty_symbols.push(symbol_item.key().clone());
+                }
+            }
+            
+            for symbol in dirty_symbols {
+                if let Err(e) = self.check_arbitrage(&symbol).await {
+                    error!("Error checking arbitrage for {}: {}", symbol, e);
+                }
 
-                    // После обработки сбрасываем флаги
-                    if let Some(exchange_map) = self.state.get(&symbol) {
-                        for mut item in exchange_map.iter_mut() {
-                            item.value_mut().is_dirty = false;
-                        }
+                // После обработки сбрасываем флаги
+                if let Some(exchange_map) = self.state.get(&symbol) {
+                    for mut item in exchange_map.iter_mut() {
+                        item.value_mut().is_dirty = false;
                     }
                 }
             }
+        }
+    }
+
+    fn run_garbage_collection(&self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        
+        // 12 часов = 43_200_000 миллисекунд
+        let timeout_ms = 43_200_000;
+        let mut removed_count = 0;
+
+        self.state.retain(|_, exchange_map| {
+            // Оставляем только те данные бирж, которые обновлялись менее 12 часов назад
+            exchange_map.retain(|_, state| {
+                now_ms.saturating_sub(state.local_timestamp) < timeout_ms
+            });
+            
+            // Если по монете не осталось активных бирж, удаляем монету целиком
+            let has_exchanges_left = !exchange_map.is_empty();
+            if !has_exchanges_left {
+                removed_count += 1;
+            }
+            has_exchanges_left
+        });
+        
+        if removed_count > 0 {
+            info!("🧹 Очистка памяти (GC): удалено {} неактивных монет (старше 12 часов).", removed_count);
         }
     }
 

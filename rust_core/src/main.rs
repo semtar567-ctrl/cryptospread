@@ -158,15 +158,6 @@ async fn main() -> anyhow::Result<()> {
         collector.run_dynamic(&mut asterdex_wl_rx).await;
     });
 
-    // Запуск BitMart Futures коллектора
-    let bitmart_config = config.clone();
-    let bitmart_engine = Arc::clone(&engine);
-    let mut bitmart_wl_rx = whitelist_tx.subscribe();
-    tokio::spawn(async move {
-        let mut collector = collectors::bitmart_futures::BitmartFuturesCollector::new(bitmart_config, bitmart_engine);
-        collector.run_dynamic(&mut bitmart_wl_rx).await;
-    });
-
     // Запуск HTX Futures коллектора
     let htx_config = config.clone();
     let htx_engine = Arc::clone(&engine);
@@ -220,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    info!("Rust Core initialized. Binance, Bybit, OKX, MEXC, Bitget, Gate.io, BingX, KuCoin, Hyperliquid, Aster DEX, BitMart, HTX, dYdX, LBank, XT and CoinEx collectors started.");
+    info!("Rust Core initialized. 15 exchanges collectors started (Binance, Bybit, OKX, MEXC, Bitget, Gate.io, BingX, KuCoin, Hyperliquid, Aster DEX, HTX, dYdX, LBank, XT, CoinEx).");
     
     // Временная заглушка, чтобы main не завершался сразу
     tokio::signal::ctrl_c().await?;

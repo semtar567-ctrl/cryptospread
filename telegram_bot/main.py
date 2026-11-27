@@ -335,17 +335,15 @@ async def show_tracked_details_callback(callback: types.CallbackQuery):
             await show_tracked_list_callback(callback)
             return
         
-        from redis.asyncio import Redis
-        redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+        from telegram_bot.utils.redis_sync import get_redis_client
+        redis = get_redis_client()
         current_spread_val = "н/д"
-        try:
-            key = f"current_spread:futures_futures:{record.symbol}:{record.buy_exchange}:{record.sell_exchange}"
-            data_raw = await redis.get(key)
-            if data_raw:
-                s = json.loads(data_raw)
-                current_spread_val = f"{s['vwap_net_spread']:.2f}%"
-        finally:
-            await redis.aclose()
+        
+        key = f"current_spread:futures_futures:{record.symbol}:{record.buy_exchange}:{record.sell_exchange}"
+        data_raw = await redis.get(key)
+        if data_raw:
+            s = json.loads(data_raw)
+            current_spread_val = f"{s['vwap_net_spread']:.2f}%"
             
         text = (
             f"📍 **ОТСЛЕЖИВАЕМАЯ СВЯЗКА**\n\n"
@@ -401,7 +399,7 @@ async def start_command(message: types.Message):
             user = User(user_id=user_id, username=username, is_admin=True)
             session.add(user)
             session.add(UserSetting(user_id=user_id, trade_type="futures_futures"))
-            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart", "htx", "dydx", "lbank", "xt", "coinexfutures"]:
+            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "htx", "dydx", "lbank", "xt", "coinexfutures"]:
                 session.add(UserExchange(user_id=user_id, exchange_id=ex_id))
             await session.commit()
             await message.answer(f"👋 Добро пожаловать, {username or 'друг'}!", reply_markup=get_reply_main_menu())
@@ -410,7 +408,7 @@ async def start_command(message: types.Message):
             stmt_ex = select(UserExchange).where(UserExchange.user_id == user_id)
             result_ex = await session.execute(stmt_ex)
             existing_ex = {ex.exchange_id for ex in result_ex.scalars().all()}
-            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart", "htx", "dydx", "lbank", "xt", "coinexfutures"]:
+            for ex_id in ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "htx", "dydx", "lbank", "xt", "coinexfutures"]:
                 if ex_id not in existing_ex:
                     session.add(UserExchange(user_id=user_id, exchange_id=ex_id))
             await session.commit()
@@ -449,7 +447,7 @@ async def exchanges_settings_callback(callback: types.CallbackQuery):
         result = await session.execute(stmt)
         existing_exchanges = {ex.exchange_id for ex in result.scalars().all()}
         
-        required_exchanges = ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "bitmart", "htx", "dydx", "lbank", "xt", "coinexfutures"]
+        required_exchanges = ["binance", "bybit", "okx", "mexc", "bitget", "gateio", "bingx", "kucoinfutures", "hyperliquid", "asterdex", "htx", "dydx", "lbank", "xt", "coinexfutures"]
         added = False
         for ex_id in required_exchanges:
             if ex_id not in existing_exchanges:
@@ -542,7 +540,7 @@ async def edit_work_vol_callback(callback: types.CallbackQuery, state: FSMContex
 
 async def edit_volume_24h_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(SettingsStates.wait_for_volume_24h)
-    await callback.message.answer("Введите минимальный суточный объем в миллионах USD (например, 10):")
+    await callback.message.answer("Введите минимальный суточный объем в USD (например, 1000000):")
     await callback.answer()
 
 async def edit_lifetime_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -671,8 +669,8 @@ async def sympage_callback(callback: types.CallbackQuery):
 
     user_id = callback.from_user.id
 
-    from redis.asyncio import Redis
-    redis = Redis(host=settings.redis_host, port=settings.redis_port, decode_responses=True)
+    from telegram_bot.utils.redis_sync import get_redis_client
+    redis = get_redis_client()
     try:
         key = f"symbol_signal:{user_id}:{symbol}"
         raw_data = await redis.get(key)
@@ -703,8 +701,6 @@ async def sympage_callback(callback: types.CallbackQuery):
     except Exception as e:
         logger.error("Error in sympage_callback", error=str(e))
         await callback.answer("Ошибка при переключении.", show_alert=True)
-    finally:
-        await redis.aclose()
 
 
 async def symref_callback(callback: types.CallbackQuery):

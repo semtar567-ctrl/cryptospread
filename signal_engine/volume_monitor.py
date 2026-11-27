@@ -48,12 +48,11 @@ class MetaMonitor:
             "okx": ccxt.okx({"options": {"defaultType": "swap"}}),
             "mexc": ccxt.mexc({"options": {"defaultType": "swap"}}),
             "bitget": ccxt.bitget({"options": {"defaultType": "swap"}}),
-            "gateio": ccxt.gateio({"options": {"defaultType": "swap"}}),
+            "gateio": ccxt.gate({"options": {"defaultType": "swap"}}),
             "bingx": ccxt.bingx({"options": {"defaultType": "swap"}}),
             "kucoinfutures": ccxt.kucoinfutures({"options": {"defaultType": "swap"}}),
             "hyperliquid": None,
             "asterdex": None,
-            "bitmart": ccxt.bitmart({"options": {"defaultType": "swap"}}),
             "htx": ccxt.htx({"options": {"defaultType": "swap"}}),
             "dydx": None,
             "lbank": ccxt.lbank({"options": {"defaultType": "swap"}}),
@@ -162,7 +161,8 @@ class MetaMonitor:
                 # 2. Только USDT/USDC обеспечение (Linear)
                 # 3. Активные торги
                 if not market.get("swap"): continue
-                if market.get("settle") not in ["USDT", "USDC"]: continue
+                if market.get("settle") == "USDC" or market.get("quote") == "USDC": continue
+                if market.get("settle") != "USDT" and market.get("quote") != "USDT": continue
                 if market.get("active") is False: continue
 
                 # 4. Исключаем Pre-Market, Pre-IPO, RWA (акции), TradFi и не-бессрочные контракты
@@ -196,12 +196,17 @@ class MetaMonitor:
 
                 total_multiplier = prefix_mult
                 
-                # Получаем объем из тикера безопасно
+                # Получаем объем из тикера безопасно (Quote Turnover в USD)
                 ticker = tickers.get(symbol, {})
                 quote_vol = _safe_float(ticker.get("quoteVolume"))
                 if quote_vol <= 0 and isinstance(ticker.get("info"), dict):
                     t_info = ticker["info"]
-                    quote_vol = _safe_float(t_info.get("volCcy24h")) or _safe_float(t_info.get("volUsd24h")) or _safe_float(t_info.get("value"))
+                    quote_vol = _safe_float(t_info.get("volCcy24h")) or _safe_float(t_info.get("volUsd24h")) or _safe_float(t_info.get("value")) or _safe_float(t_info.get("turnover"))
+                if quote_vol <= 0:
+                    base_vol = _safe_float(ticker.get("baseVolume")) or (_safe_float(ticker.get("info", {}).get("vol24h")) if isinstance(ticker.get("info"), dict) else 0.0)
+                    last_p = _safe_float(ticker.get("last"))
+                    if base_vol > 0 and last_p > 0:
+                        quote_vol = base_vol * last_p
 
                 fr_val = funding_rates.get(symbol)
                 funding_rate = _safe_float(fr_val) if not isinstance(fr_val, dict) else 0.0
@@ -443,6 +448,104 @@ class MetaMonitor:
             logger.error("Error fetching meta from dydx", error=str(e))
             return {}
 
+    async def fetch_bitmart_meta(self):
+        """
+        Загружает мета-данные бессрочных фьючерсов BitMart напрямую из REST API:
+        https://api-cloud-v2.bitmart.com/contract/public/details
+        """
+        url = "https://api-cloud-v2.bitmart.com/contract/public/details"
+        try:
+            session = getattr(self, "session", None) or get_custom_session()
+            async with session.get(url, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.error(f"BitMart API error status: {resp.status}")
+                    return {}
+                data = await resp.json()
+
+            if not isinstance(data, dict):
+                logger.error("Invalid response format from BitMart details endpoint")
+                return {}
+
+            symbols_data = (data.get("data") or {}).get("symbols", [])
+            if not isinstance(symbols_data, list):
+                logger.error("Invalid symbols format in BitMart details response")
+                return {}
+
+            known_prefix_memes = {"PEPE", "BONK", "SATS", "MOG", "BABYDOGE", "CHEEMS", "MUU", "CAT", "NEX", "FLOKI", "SHIB"}
+
+            results = {}
+            for item in symbols_data:
+                if not isinstance(item, dict):
+                    continue
+
+                status = item.get("status")
+                quote_currency = item.get("quote_currency")
+                if status != "Trading" or quote_currency != "USDT":
+                    continue
+
+                symbol = item.get("symbol")
+                if not symbol:
+                    continue
+
+                base = item.get("base_currency")
+                if base:
+                    raw_base = str(base).upper()
+                elif symbol.endswith("USDT"):
+                    raw_base = symbol[:-4].upper()
+                else:
+                    raw_base = symbol.upper()
+
+                prefix_mult = 1.0
+                matched_prefix = None
+
+                for prefix in ["1000000", "10000", "1000"]:
+                    if raw_base.startswith(prefix) and len(raw_base) > len(prefix):
+                        prefix_mult = float(prefix)
+                        matched_prefix = prefix
+                        break
+
+                if matched_prefix:
+                    unified = f"{raw_base}USDT"
+                elif raw_base in known_prefix_memes:
+                    prefix_key = "1000000" if raw_base in ["MOG", "BABYDOGE", "MUU"] else "1000"
+                    unified = f"{prefix_key}{raw_base}USDT"
+                else:
+                    unified = f"{raw_base}USDT"
+
+                last_price = _safe_float(item.get("last_price"))
+                volume_24h = _safe_float(item.get("turnover_24h"))
+                funding_rate = _safe_float(item.get("funding_rate"))
+
+                funding_time_raw = item.get("funding_time")
+                next_funding_at = None
+                if funding_time_raw is not None:
+                    try:
+                        next_funding_at = int(float(funding_time_raw))
+                    except (ValueError, TypeError, OverflowError):
+                        next_funding_at = None
+
+                contract_size = _safe_float(item.get("contract_size"), 1.0)
+                if contract_size <= 0.0:
+                    contract_size = 1.0
+
+                results[unified] = {
+                    "exchange_id_symbol": symbol,
+                    "volume_24h": volume_24h,
+                    "funding_rate": funding_rate,
+                    "next_funding_at": next_funding_at,
+                    "last_price": last_price,
+                    "taker_fee": 0.0006,
+                    "multiplier": prefix_mult,
+                    "contract_size": contract_size
+                }
+
+            logger.info(f"Fetched {len(results)} swaps from bitmart")
+            return results
+
+        except Exception as e:
+            logger.error("Error fetching meta from bitmart", error=str(e))
+            return {}
+
     async def update_all(self):
         logger.info("Meta Monitor (Strict Mode) started")
         while True:
@@ -488,7 +591,7 @@ class MetaMonitor:
                         sorted_p = sorted(valid_prices)
                         median_p = sorted_p[len(sorted_p) // 2]
                         if median_p > 0:
-                            filtered_exs = [ex_id for ex_id in exs if (full_map[unified][ex_id].get("last_price") or 0) > 0 and 0.25 <= (full_map[unified][ex_id]["last_price"] / median_p) <= 4.0]
+                            filtered_exs = [ex_id for ex_id in exs if (full_map[unified][ex_id].get("last_price") or 0) > 0 and 0.6 <= (full_map[unified][ex_id]["last_price"] / median_p) <= 1.6]
                             if len(filtered_exs) >= 2:
                                 exs = filtered_exs
 
@@ -499,7 +602,8 @@ class MetaMonitor:
                             ex_mappings[ex_id] = {
                                 "id": full_map[unified][ex_id]["exchange_id_symbol"],
                                 "fee": full_map[unified][ex_id]["taker_fee"],
-                                "multiplier": full_map[unified][ex_id].get("multiplier", 1.0)
+                                "multiplier": full_map[unified][ex_id].get("multiplier", 1.0),
+                                "contract_size": full_map[unified][ex_id].get("contract_size", 1.0)
                             }
                             
                             # Сохраняем мета-данные (фандинг и т.д.)

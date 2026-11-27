@@ -4,13 +4,15 @@ import os
 import sys
 import psutil
 from datetime import datetime
+from collections import OrderedDict
 
 # Настройки
 PROCESSES = {
     "Rust Core": ["powershell.exe", "-Command", "cd rust_core; $env:RUST_LOG='info'; cargo run --release"],
     "Signal Engine": ["uv", "run", "signal_engine/main.py"],
     "Telegram Bot": ["uv", "run", "telegram_bot/main.py"],
-    "Volume Monitor": ["uv", "run", "signal_engine/volume_monitor.py"]
+    "Volume Monitor": ["uv", "run", "signal_engine/volume_monitor.py"],
+    "Web Server": ["uv", "run", "web/server.py"]
 }
 
 PROJECT_ROOT = os.getcwd()
@@ -22,7 +24,7 @@ if not os.path.exists(LOGS_DIR):
     os.makedirs(LOGS_DIR)
 
 LAST_AUDITED_POS = {}
-LAST_INCIDENTS = {}
+LAST_INCIDENTS = OrderedDict()
 
 def log_incident(component, event_type, description):
     now_ts = time.time()
@@ -31,6 +33,8 @@ def log_incident(component, event_type, description):
     if last_record and (now_ts - last_record) < 300:
         return
     LAST_INCIDENTS[key] = now_ts
+    if len(LAST_INCIDENTS) > 1000:
+        LAST_INCIDENTS.popitem(last=False)
 
     timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     line = f"| {timestamp} | {component} | {event_type} | {description} |\n"

@@ -1,22 +1,31 @@
 use crate::models::OrderBookUpdate;
 use crate::config::AppConfig;
 use crate::engine::SpreadEngine;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
-use dashmap::DashMap;
 use futures_util::{StreamExt, SinkExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tracing::{info, error, warn};
-use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH, Instant};
+use tracing::{info, error, warn, debug};
+use serde_json::{Value, json};
+use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
+use tokio::sync::mpsc;
+use dashmap::DashMap;
+
+/// Команда для управления пулом соединений
+enum PoolCommand {
+    Subscribe(String),
+    Unsubscribe(String),
+}
 
 pub struct AsterdexFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., btcusdt) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier, ContractSize)
-    id_map: DashMap<String, (String, f64, f64, f64)>,
-    // Log cooldown timer per symbol
-    last_log_time: DashMap<String, Instant>,
+    // Маппинг: ExchangeID (e.g., btcusdt) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier, Contract Size)
+    id_map: Arc<Mutex<HashMap<String, (String, f64, f64, f64)>>>,
+    // Список всех монет, на которые мы СЕЙЧАС подписаны (по всем пулам)
+    active_subscriptions: HashSet<String>,
+    // Каналы связи с каждым запущенным пулом
+    pool_channels: Vec<mpsc::UnboundedSender<PoolCommand>>,
 }
 
 impl AsterdexFuturesCollector {
@@ -24,43 +33,152 @@ impl AsterdexFuturesCollector {
         Self { 
             _config: config, 
             engine,
-            id_map: DashMap::new(),
-            last_log_time: DashMap::new(),
+            id_map: Arc::new(Mutex::new(HashMap::new())),
+            active_subscriptions: HashSet::new(),
+            pool_channels: Vec::new(),
         }
     }
 
     pub async fn run_dynamic(&mut self, whitelist_rx: &mut tokio::sync::broadcast::Receiver<HashMap<String, HashMap<String, serde_json::Value>>>) {
-        let mut current_ids: HashSet<String> = HashSet::new();
-        let ws_url = "wss://fstream.asterdex.com/ws";
+        info!("Aster DEX Collector 2.0 (Smart Pooling) started");
+        let last_log_time = Arc::new(DashMap::<String, Instant>::new());
 
         loop {
-            info!("Connecting to Aster DEX Futures WS: {}", ws_url);
+            if let Ok(whitelist) = whitelist_rx.recv().await {
+                let mut new_id_map = HashMap::new();
+                let mut target_ids = HashSet::new();
+
+                for (unified, mapping) in whitelist.iter() {
+                    if let Some(ex_info) = mapping.get("asterdex") {
+                        if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
+                            let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0004);
+                            let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
+                            let contract_size = ex_info.get("contract_size").and_then(|c| c.as_f64()).unwrap_or(1.0);
+
+                            let stream_id = ex_id.replace("/", "").replace("-", "").to_lowercase();
+                            new_id_map.insert(stream_id.clone(), (unified.clone(), fee, multiplier, contract_size));
+                            target_ids.insert(stream_id);
+                        }
+                    }
+                }
+
+                // Обновляем глобальную карту ID
+                {
+                    let mut id_map_guard = self.id_map.lock().unwrap();
+                    *id_map_guard = new_id_map;
+                }
+
+                let to_add: Vec<String> = target_ids.difference(&self.active_subscriptions).cloned().collect();
+                let to_remove: Vec<String> = self.active_subscriptions.difference(&target_ids).cloned().collect();
+
+                if to_add.is_empty() && to_remove.is_empty() {
+                    continue;
+                }
+
+                info!("Aster DEX Sync: +{} new, -{} old symbols across pools", to_add.len(), to_remove.len());
+
+                for symbol in to_remove {
+                    for tx in &self.pool_channels {
+                        let _ = tx.send(PoolCommand::Unsubscribe(symbol.clone()));
+                    }
+                    self.active_subscriptions.remove(&symbol);
+                }
+
+                for symbol in to_add {
+                    let mut success = false;
+                    for tx in &self.pool_channels {
+                        if tx.send(PoolCommand::Subscribe(symbol.clone())).is_ok() {
+                            success = true;
+                            break;
+                        }
+                    }
+
+                    if !success {
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        let engine = self.engine.clone();
+                        let id_map = self.id_map.clone();
+                        let log_time = last_log_time.clone();
+                        let p_id = self.pool_channels.len() + 1;
+                        
+                        self.pool_channels.push(tx.clone());
+                        let first_symbol = symbol.clone();
+                        
+                        tokio::spawn(async move {
+                            Self::manage_smart_pool(p_id, rx, engine, id_map, log_time, first_symbol).await;
+                        });
+                    }
+                    self.active_subscriptions.insert(symbol);
+                }
+            }
+        }
+    }
+
+    async fn manage_smart_pool(
+        pool_id: usize,
+        mut cmd_rx: mpsc::UnboundedReceiver<PoolCommand>,
+        engine: Arc<SpreadEngine>,
+        id_map: Arc<Mutex<HashMap<String, (String, f64, f64, f64)>>>,
+        last_log_time: Arc<DashMap<String, Instant>>,
+        initial_symbol: String
+    ) {
+        let ws_url = "wss://fstream.asterdex.com/ws";
+        let mut my_symbols: HashSet<String> = HashSet::new();
+        my_symbols.insert(initial_symbol.clone());
+
+        loop {
+            info!("Aster DEX Smart Pool #{}: Connecting to {}...", pool_id, ws_url);
 
             match connect_async(ws_url).await {
                 Ok((mut ws_stream, _)) => {
-                    info!("Successfully connected to Aster DEX Futures");
+                    info!("Aster DEX Smart Pool #{}: Connected", pool_id);
 
-                    // Re-subscribe if reconnecting
-                    if !current_ids.is_empty() {
-                        let to_subscribe: Vec<String> = current_ids.iter().map(|id| format!("{}@depth20@100ms", id.to_lowercase())).collect();
-                        for (idx, chunk) in to_subscribe.chunks(50).enumerate() {
-                            let sub_msg = serde_json::json!({
-                                "method": "SUBSCRIBE",
-                                "params": chunk,
-                                "id": idx + 1
-                            });
-                            let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
-                        }
+                    // Сразу подписываемся на закрепленные за этим пулом символы
+                    let streams: Vec<String> = my_symbols.iter().map(|s| format!("{}@depth20@100ms", s)).collect();
+                    for (idx, chunk) in streams.chunks(25).enumerate() {
+                        let sub_msg = json!({
+                            "method": "SUBSCRIBE",
+                            "params": chunk,
+                            "id": idx + 1
+                        });
+                        let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
 
                     loop {
                         tokio::select! {
+                            Some(cmd) = cmd_rx.recv() => {
+                                match cmd {
+                                    PoolCommand::Subscribe(s) => {
+                                        if my_symbols.len() < 150 {
+                                            my_symbols.insert(s.clone());
+                                            let stream_name = format!("{}@depth20@100ms", s);
+                                            let sub_msg = json!({
+                                                "method": "SUBSCRIBE",
+                                                "params": [stream_name],
+                                                "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+                                            });
+                                            let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
+                                        }
+                                    }
+                                    PoolCommand::Unsubscribe(s) => {
+                                        if my_symbols.remove(&s) {
+                                            let stream_name = format!("{}@depth20@100ms", s);
+                                            let unsub_msg = json!({
+                                                "method": "UNSUBSCRIBE",
+                                                "params": [stream_name],
+                                                "id": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+                                            });
+                                            let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
+                                        }
+                                    }
+                                }
+                            }
                             msg = ws_stream.next() => {
                                 match msg {
                                     Some(Ok(Message::Text(text))) => {
-                                        if let Err(e) = self.handle_message(&text).await {
+                                        if let Err(e) = Self::handle_message(&text, &engine, &id_map, &last_log_time).await {
                                             if !text.contains("\"result\":null") && !text.contains("\"result\"") {
-                                                warn!("Aster DEX parse error: {} | Raw: {}", e, text);
+                                                debug!("Aster DEX Pool #{}: Parse error: {} | Raw: {}", pool_id, e, text);
                                             }
                                         }
                                     }
@@ -70,92 +188,30 @@ impl AsterdexFuturesCollector {
                                     Some(Ok(Message::Pong(_))) => {}
                                     Some(Ok(Message::Frame(_))) => {}
                                     Some(Ok(Message::Binary(_))) => {}
-                                    None => {
-                                        warn!("Aster DEX WS stream closed. Reconnecting in 1s...");
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                    _ => {
+                                        warn!("Aster DEX Smart Pool #{}: Connection lost. Reconnecting in 1s...", pool_id);
+                                        tokio::time::sleep(Duration::from_secs(1)).await;
                                         break;
                                     }
-                                    Some(Err(e)) => {
-                                        warn!("Aster DEX WS error: {}. Reconnecting in 1s...", e);
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                                        break;
-                                    }
-                                    _ => {}
                                 }
-                            }
-                            Ok(whitelist) = whitelist_rx.recv() => {
-                                let mut new_id_map = HashMap::new();
-                                let mut new_ids = HashSet::new();
-
-                                for (unified, mapping) in whitelist.iter() {
-                                    if let Some(ex_info) = mapping.get("asterdex") {
-                                        if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
-                                            let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0004);
-                                            let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
-                                            let contract_size = ex_info.get("contract_size").and_then(|c| c.as_f64()).unwrap_or(1.0);
-
-                                            let stream_id = ex_id.replace("/", "").replace("-", "").to_lowercase();
-                                            new_id_map.insert(stream_id.clone(), (unified.clone(), fee, multiplier, contract_size));
-                                            new_ids.insert(stream_id);
-                                        }
-                                    }
-                                }
-
-                                if new_ids == current_ids {
-                                    continue;
-                                }
-
-                                self.id_map.clear();
-                                for (k, v) in new_id_map {
-                                    self.id_map.insert(k, v);
-                                }
-
-                                let to_subscribe_streams: Vec<String> = new_ids.difference(&current_ids)
-                                    .map(|id| format!("{}@depth20@100ms", id.to_lowercase()))
-                                    .collect();
-
-                                let to_unsubscribe_streams: Vec<String> = current_ids.difference(&new_ids)
-                                    .map(|id| format!("{}@depth20@100ms", id.to_lowercase()))
-                                    .collect();
-
-                                if !to_subscribe_streams.is_empty() {
-                                    info!("Aster DEX: Subscribing to {} streams", to_subscribe_streams.len());
-                                    for (idx, chunk) in to_subscribe_streams.chunks(50).enumerate() {
-                                        let sub_msg = serde_json::json!({
-                                            "method": "SUBSCRIBE",
-                                            "params": chunk,
-                                            "id": idx + 100
-                                        });
-                                        let _ = ws_stream.send(Message::Text(sub_msg.to_string().into())).await;
-                                    }
-                                }
-
-                                if !to_unsubscribe_streams.is_empty() {
-                                    info!("Aster DEX: Unsubscribing from {} streams", to_unsubscribe_streams.len());
-                                    for (idx, chunk) in to_unsubscribe_streams.chunks(50).enumerate() {
-                                        let unsub_msg = serde_json::json!({
-                                            "method": "UNSUBSCRIBE",
-                                            "params": chunk,
-                                            "id": idx + 500
-                                        });
-                                        let _ = ws_stream.send(Message::Text(unsub_msg.to_string().into())).await;
-                                    }
-                                }
-
-                                current_ids = new_ids;
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    error!("Failed to connect to Aster DEX WS: {}. Retrying in 5s...", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    error!("Aster DEX Smart Pool #{}: Connect failed: {}. Retrying in 5s...", pool_id, e);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
         }
     }
 
-    async fn handle_message(&self, text: &str) -> anyhow::Result<()> {
+    async fn handle_message(
+        text: &str, 
+        engine: &Arc<SpreadEngine>,
+        id_map: &Arc<Mutex<HashMap<String, (String, f64, f64, f64)>>>,
+        last_log_time: &Arc<DashMap<String, Instant>>,
+    ) -> anyhow::Result<()> {
         let v: Value = serde_json::from_str(text)?;
 
         let (stream_name, data) = if let Some(stream) = v.get("stream").and_then(|s| s.as_str()) {
@@ -176,8 +232,13 @@ impl AsterdexFuturesCollector {
             return Ok(());
         }
 
-        let (unified_symbol, taker_fee, multiplier, contract_size) = match self.id_map.get(&stream_id) {
-            Some(item) => item.value().clone(),
+        let map_entry = {
+            let id_map_guard = id_map.lock().unwrap();
+            id_map_guard.get(&stream_id).cloned()
+        };
+
+        let (unified_symbol, taker_fee, multiplier, contract_size) = match map_entry {
+            Some(item) => item,
             None => return Ok(()),
         };
 
@@ -188,13 +249,13 @@ impl AsterdexFuturesCollector {
             return Ok(());
         }
 
-        let bids = self.parse_levels(raw_bids, multiplier, contract_size);
-        let asks = self.parse_levels(raw_asks, multiplier, contract_size);
+        let bids = Self::parse_levels(raw_bids, multiplier, contract_size);
+        let asks = Self::parse_levels(raw_asks, multiplier, contract_size);
 
         if !bids.is_empty() && !asks.is_empty() {
             if unified_symbol == "BTCUSDT" {
-                let mut log_timer = self.last_log_time.entry(unified_symbol.clone()).or_insert(Instant::now() - std::time::Duration::from_secs(60));
-                if log_timer.elapsed() >= std::time::Duration::from_secs(10) {
+                let mut log_timer = last_log_time.entry(unified_symbol.clone()).or_insert(Instant::now() - Duration::from_secs(60));
+                if log_timer.elapsed() >= Duration::from_secs(10) {
                     info!("[ASTERDEX OK] {} | Bid: {:.2} | Ask: {:.2}", 
                         unified_symbol, bids[0].0, asks[0].0);
                     *log_timer = Instant::now();
@@ -217,13 +278,13 @@ impl AsterdexFuturesCollector {
                 local_timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
                 taker_fee,
             };
-            self.engine.process_update(update).await?;
+            engine.process_update(update).await?;
         }
 
         Ok(())
     }
 
-    fn parse_levels(&self, levels: Option<&Vec<Value>>, multiplier: f64, contract_size: f64) -> Vec<(f64, f64)> {
+    fn parse_levels(levels: Option<&Vec<Value>>, multiplier: f64, contract_size: f64) -> Vec<(f64, f64)> {
         let mut result = Vec::new();
         if let Some(list) = levels {
             for level in list {

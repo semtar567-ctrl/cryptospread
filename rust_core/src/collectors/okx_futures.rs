@@ -13,10 +13,10 @@ use dashmap::DashMap;
 pub struct OkxFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Mapping: ExchangeID (e.g., BTC-USDT-SWAP) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier)
-    id_map: DashMap<String, (String, f64, f64)>,
+    // Mapping: ExchangeID (e.g., BTC-USDT-SWAP) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier, Contract Size)
+    id_map: Arc<DashMap<String, (String, f64, f64, f64)>>,
     // Таймер для контрольного лога
-    last_log_time: DashMap<String, Instant>,
+    last_log_time: Arc<DashMap<String, Instant>>,
 }
 
 
@@ -25,21 +25,40 @@ impl OkxFuturesCollector {
         Self { 
             _config: config, 
             engine,
-            id_map: DashMap::new(),
-            last_log_time: DashMap::new(),
+            id_map: Arc::new(DashMap::new()),
+            last_log_time: Arc::new(DashMap::new()),
         }
     }
 
     pub async fn run_dynamic(&mut self, whitelist_rx: &mut tokio::sync::broadcast::Receiver<std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>>) {
-        let url_str = "wss://ws.okx.com:8443/ws/v5/public";
+        info!("OKX Collector (Public WS Books5) started");
         let mut current_ids: HashSet<String> = HashSet::new();
 
         loop {
+            let url_str = "wss://ws.okx.com:8443/ws/v5/public";
             info!("Connecting to OKX Futures WS: {}", url_str);
 
             match connect_async(url_str).await {
                 Ok((mut ws_stream, _)) => {
                     info!("Successfully connected to OKX Futures");
+
+                    if !current_ids.is_empty() {
+                        let to_subscribe: Vec<Value> = current_ids.iter()
+                            .map(|id| json!({"channel": "books5", "instId": id}))
+                            .collect();
+                        
+                        info!("OKX: Resubscribing to {} symbols", to_subscribe.len());
+                        for sub_chunk in to_subscribe.chunks(10) {
+                            let sub_msg = json!({
+                                "op": "subscribe",
+                                "args": sub_chunk
+                            });
+                            if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string().into())).await {
+                                error!("OKX: Subscription failed: {}", e);
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    }
 
                     loop {
                         tokio::select! {
@@ -71,7 +90,8 @@ impl OkxFuturesCollector {
                                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
                                             let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
                                             let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
-                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee, multiplier));
+                                            let contract_size = ex_info.get("contract_size").and_then(|c| c.as_f64()).unwrap_or(1.0);
+                                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee, multiplier, contract_size));
                                             new_ids.insert(ex_id.to_string());
                                         }
                                     }
@@ -145,15 +165,15 @@ impl OkxFuturesCollector {
         if let Some(arg) = v.get("arg") {
             if arg.get("channel").and_then(|c| c.as_str()) == Some("books5") {
                 if let Some(inst_id) = arg.get("instId").and_then(|i| i.as_str()) {
-                    let (unified_symbol, taker_fee, multiplier) = match self.id_map.get(inst_id) {
+                    let (unified_symbol, taker_fee, multiplier, contract_size) = match self.id_map.get(inst_id) {
                         Some(item) => item.value().clone(),
                         None => return Ok(()),
                     };
 
                     if let Some(data_array) = v.get("data").and_then(|d| d.as_array()) {
                         if let Some(data) = data_array.first() {
-                            let mut bids = self.parse_levels(data.get("bids").and_then(|b| b.as_array()));
-                            let mut asks = self.parse_levels(data.get("asks").and_then(|a| a.as_array()));
+                            let mut bids = self.parse_levels(data.get("bids").and_then(|b| b.as_array()), contract_size);
+                            let mut asks = self.parse_levels(data.get("asks").and_then(|a| a.as_array()), contract_size);
 
                             if multiplier > 1.0 {
                                 for (p, a) in bids.iter_mut() {
@@ -167,7 +187,6 @@ impl OkxFuturesCollector {
                             }
 
                             if !bids.is_empty() && !asks.is_empty() {
-                                // Контрольный лог для BTC
                                 if unified_symbol == "BTCUSDT" {
                                     let mut log_timer = self.last_log_time.entry(unified_symbol.clone()).or_insert(Instant::now() - std::time::Duration::from_secs(60));
                                     if log_timer.elapsed() >= std::time::Duration::from_secs(10) {
@@ -197,11 +216,11 @@ impl OkxFuturesCollector {
         Ok(())
     }
 
-    fn parse_levels(&self, levels: Option<&Vec<Value>>) -> Vec<(f64, f64)> {
+    fn parse_levels(&self, levels: Option<&Vec<Value>>, contract_size: f64) -> Vec<(f64, f64)> {
         levels.map(|l| {
             l.iter().map(|item| {
                 let p = item[0].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
-                let a = item[1].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                let a = item[1].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0) * contract_size;
                 (p, a)
             }).collect()
         }).unwrap_or_default()

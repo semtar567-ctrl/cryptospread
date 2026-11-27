@@ -220,7 +220,6 @@ def format_signal_card_msg_and_kb(symbol: str, pairs: list, idx: int = 0):
         f"Фандинг: {s['sell_funding']:.3f}% | {format_time_to_funding(s['sell_next_f'])}\n"
         f"Объем 24ч: {format_vol_usd(s.get('sell_vol_24h', 0))}\n"
         f"Проскальзывание: {s['sell_slip']:.3f}%{warn_s}\n\n"
-        f'📈 <a href="{chart_link}">График спреда 1.0000 🔗</a>\n'
         f"==========="
     )
 

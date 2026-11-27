@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>CryptoSpread Chart - Dual Exchange Ratio Index</title>
+  
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  
+  <!-- Local TradingView Lightweight Charts -->
+  <script src="lightweight-charts.js"></script>
+  
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="style.css?v=1.2.0">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header Bar with Controls -->
+    <header class="header-bar">
+      <div class="brand">
+        <span class="brand-icon">⚡</span>
+        <h1 class="brand-title">CryptoSpread <span class="badge">LIVE</span></h1>
+      </div>
+
+      <div class="controls-grid">
+        <div class="control-group">
+          <label for="buy-exchange">Buy Exchange</label>
+          <select id="buy-exchange" class="custom-select">
+            <option value="binance" selected>Binance</option>
+            <option value="bybit">Bybit</option>
+            <option value="okx">OKX</option>
+            <option value="gateio">Gate.io</option>
+            <option value="bitget">Bitget</option>
+            <option value="mexc">MEXC</option>
+            <option value="bingx">BingX</option>
+            <option value="kucoinfutures">KuCoin</option>
+            <option value="hyperliquid">Hyperliquid</option>
+            <option value="asterdex">Aster DEX</option>
+            <option value="htx">HTX</option>
+            <option value="dydx">dYdX</option>
+            <option value="lbank">LBank</option>
+            <option value="xt">XT</option>
+            <option value="coinexfutures">CoinEx</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="sell-exchange">Sell Exchange</label>
+          <select id="sell-exchange" class="custom-select">
+            <option value="binance">Binance</option>
+            <option value="bybit" selected>Bybit</option>
+            <option value="okx">OKX</option>
+            <option value="gateio">Gate.io</option>
+            <option value="bitget">Bitget</option>
+            <option value="mexc">MEXC</option>
+            <option value="bingx">BingX</option>
+            <option value="kucoinfutures">KuCoin</option>
+            <option value="hyperliquid">Hyperliquid</option>
+            <option value="asterdex">Aster DEX</option>
+            <option value="htx">HTX</option>
+            <option value="dydx">dYdX</option>
+            <option value="lbank">LBank</option>
+            <option value="xt">XT</option>
+            <option value="coinexfutures">CoinEx</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="pair-symbol">Trading Pair (<span id="pair-count">867</span>)</label>
+          <select id="pair-symbol" class="custom-select">
+            <option value="BTC/USDT" selected>BTC/USDT</option>
+            <option value="ETH/USDT">ETH/USDT</option>
+            <option value="SOL/USDT">SOL/USDT</option>
+          </select>
+        </div>
+
+        <div class="control-group timeframe-group">
+          <label>Timeframe</label>
+          <div class="tf-btn-group" id="timeframe-buttons">
+            <button class="tf-btn active" data-tf="1m">1m</button>
+            <button class="tf-btn" data-tf="5m">5m</button>
+            <button class="tf-btn" data-tf="15m">15m</button>
+            <button class="tf-btn" data-tf="1h">1h</button>
+            <button class="tf-btn" data-tf="4h">4h</button>
+            <button class="tf-btn" data-tf="1D">1D</button>
+          </div>
+        </div>
+
+        <div class="control-group refresh-group">
+          <label class="sr-only">Actions</label>
+          <button id="refresh-btn" class="refresh-btn" title="Refresh Chart Data">
+            <svg class="refresh-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6M1 20v-6h6"></path>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Info Banner / Stat Cards -->
+    <section class="stat-banner">
+      <div class="stat-card">
+        <span class="stat-label">Active Pair</span>
+        <span class="stat-value" id="combo-label">BINANCE / BYBIT (BTC/USDT)</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Spread %</span>
+        <span class="stat-value highlight" id="spread-value">--</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Convergence Target</span>
+        <span class="stat-value neutral" id="convergence-target">0.00% (Parity)</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Live Buy / Sell</span>
+        <span class="stat-value" id="prices-value">--</span>
+      </div>
+      <div class="stat-card live-status-card">
+        <span class="stat-label">Live Stream</span>
+        <span class="stat-value" id="live-indicator"><span class="live-dot pulse"></span> REALTIME</span>
+      </div>
+    </section>
+
+    <!-- Error Banner (Hidden by default) -->
+    <div id="error-banner" class="error-banner hidden">
+      <span id="error-message"></span>
+    </div>
+
+    <!-- Chart Container -->
+    <main class="chart-wrapper">
+      <div id="chart-container" class="chart-container"></div>
+      
+      <!-- Loading Overlay Spinner (Hidden by default) -->
+      <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <span class="loading-text">Fetching Market Data...</span>
+      </div>
+    </main>
+  </div>
+
+  <!-- Main Application Script (Loaded at end of body for 100% reliable execution) -->
+  <script src="app.js?v=1.2.0"></script>
+</body>
+</html>

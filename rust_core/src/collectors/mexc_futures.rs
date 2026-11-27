@@ -19,8 +19,8 @@ enum PoolCommand {
 pub struct MexcFuturesCollector {
     _config: AppConfig,
     engine: Arc<SpreadEngine>,
-    // Маппинг: MEXC_ID (BTC_USDT) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier)
-    id_map: Arc<Mutex<HashMap<String, (String, f64, f64)>>>,
+    // Маппинг: MEXC_ID (BTC_USDT) -> (Unified (e.g., BTCUSDT), Taker Fee, Multiplier, Contract Size)
+    id_map: Arc<Mutex<HashMap<String, (String, f64, f64, f64)>>>,
     // Список всех монет, на которые мы СЕЙЧАС подписаны (по всем пулам)
     active_subscriptions: HashSet<String>,
     // Каналы связи с каждым запущенным пулом
@@ -51,7 +51,8 @@ impl MexcFuturesCollector {
                         if let Some(ex_id) = ex_info.get("id").and_then(|id| id.as_str()).or_else(|| ex_info.as_str()) {
                             let fee = ex_info.get("fee").and_then(|f| f.as_f64()).unwrap_or(0.0006);
                             let multiplier = ex_info.get("multiplier").and_then(|m| m.as_f64()).unwrap_or(1.0);
-                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee, multiplier));
+                            let contract_size = ex_info.get("contract_size").and_then(|c| c.as_f64()).unwrap_or(1.0);
+                            new_id_map.insert(ex_id.to_string(), (unified.clone(), fee, multiplier, contract_size));
                             target_ids.insert(ex_id.to_string());
                         }
                     }
@@ -121,7 +122,7 @@ impl MexcFuturesCollector {
         pool_id: usize,
         mut cmd_rx: mpsc::UnboundedReceiver<PoolCommand>,
         engine: Arc<SpreadEngine>,
-        id_map: Arc<Mutex<HashMap<String, (String, f64, f64)>>>,
+        id_map: Arc<Mutex<HashMap<String, (String, f64, f64, f64)>>>,
         initial_symbol: String
     ) {
         let url = "wss://contract.mexc.com/edge";
@@ -198,7 +199,7 @@ impl MexcFuturesCollector {
     async fn handle_message(
         text: &str, 
         engine: &Arc<SpreadEngine>,
-        id_map: &Arc<Mutex<HashMap<String, (String, f64, f64)>>>
+        id_map: &Arc<Mutex<HashMap<String, (String, f64, f64, f64)>>>
     ) -> anyhow::Result<()> {
         let v: Value = serde_json::from_str(text)?;
 
@@ -210,10 +211,10 @@ impl MexcFuturesCollector {
                         id_map_guard.get(inst_id).cloned()
                     };
 
-                    if let Some((symbol, taker_fee, multiplier)) = map_entry {
+                    if let Some((symbol, taker_fee, multiplier, contract_size)) = map_entry {
                         if let Some(data) = v.get("data") {
-                            let mut bids = Self::parse_levels(data.get("bids").and_then(|b| b.as_array()));
-                            let mut asks = Self::parse_levels(data.get("asks").and_then(|a| a.as_array()));
+                            let mut bids = Self::parse_levels(data.get("bids").and_then(|b| b.as_array()), contract_size);
+                            let mut asks = Self::parse_levels(data.get("asks").and_then(|a| a.as_array()), contract_size);
 
                             if multiplier > 1.0 {
                                 for (p, a) in bids.iter_mut() {
@@ -249,18 +250,17 @@ impl MexcFuturesCollector {
         Ok(())
     }
 
-    fn parse_levels(levels: Option<&Vec<Value>>) -> Vec<(f64, f64)> {
+    fn parse_levels(levels: Option<&Vec<Value>>, contract_size: f64) -> Vec<(f64, f64)> {
         levels.map(|l| {
             l.iter().map(|item| {
                 let p = item[0].as_f64()
                     .or_else(|| item[0].as_str().and_then(|s| s.parse().ok()))
                     .unwrap_or(0.0);
                 
-                // ВАЖНО: Берем индекс [1] - это объем в контрактах.
-                // Индекс [2] (базовая валюта) часто приходит нулевым от MEXC.
+                // ВАЖНО: Берем индекс [1] - это объем в контрактах, умножаем на contract_size.
                 let a = item[1].as_f64()
                     .or_else(|| item[1].as_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(0.0);
+                    .unwrap_or(0.0) * contract_size;
                 
                 (p, a)
             }).collect()
