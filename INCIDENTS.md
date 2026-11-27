@@ -142667,3 +142667,63 @@
 | 27.11.2026 13:49 | Volume Monitor | LOG_ERROR | 2026-11-27 13:48:41 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
 | 27.11.2026 13:49 | Volume Monitor | LOG_ERROR | 2026-11-27 13:48:41 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
 | 27.11.2026 13:50 | Volume Monitor | LOG_ERROR | 2026-11-27 13:49:59 [error    ] Error fetching meta from okx   error='okx GET https://www.okx.com/ap |
+| 27.11.2026 13:51 | Rust Core | LOG_ERROR | [2m2026-11-27T06:51:06.947569Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 13:51 | Signal Engine | LOG_ERROR | 2026-11-27 13:51:11 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 13:51 | Volume Monitor | LOG_ERROR | 2026-11-27 13:51:00 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 13:51 | Volume Monitor | LOG_ERROR | 2026-11-27 13:51:00 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:51 | Rust Core | LOG_ERROR | [2m2026-11-27T06:51:38.368378Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 13:52 | Rust Core | LOG_ERROR | [2m2026-11-27T06:52:09.899721Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 13:52 | Rust Core | LOG_ERROR | [2m2026-11-27T06:52:41.936678Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 13:52 | Volume Monitor | LOG_ERROR | 2026-11-27 13:52:13 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 13:52 | Volume Monitor | LOG_ERROR | 2026-11-27 13:52:14 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:53 | Signal Engine | LOG_ERROR | 2026-11-27 13:53:07 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 13:53 | Signal Engine | LOG_ERROR | 2026-11-27 13:53:10 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 13:53 | Volume Monitor | LOG_ERROR | 2026-11-27 13:53:26 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 13:53 | Volume Monitor | LOG_ERROR | 2026-11-27 13:53:27 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:54 | Volume Monitor | LOG_ERROR | 2026-11-27 13:54:42 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:54 | Volume Monitor | LOG_ERROR | 2026-11-27 13:54:42 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 13:56 | Volume Monitor | LOG_ERROR | 2026-11-27 13:55:50 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:56 | Volume Monitor | LOG_ERROR | 2026-11-27 13:55:50 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 13:57 | Volume Monitor | LOG_ERROR | 2026-11-27 13:57:00 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:57 | Volume Monitor | LOG_ERROR | 2026-11-27 13:57:00 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 13:58 | Signal Engine | LOG_ERROR | 2026-11-27 13:58:11 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 13:58 | Volume Monitor | LOG_ERROR | 2026-11-27 13:58:09 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 13:58 | Volume Monitor | LOG_ERROR | 2026-11-27 13:58:10 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:59 | Volume Monitor | LOG_ERROR | 2026-11-27 13:59:20 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 13:59 | Volume Monitor | LOG_ERROR | 2026-11-27 13:59:20 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:00 | Signal Engine | LOG_ERROR | 2026-11-27 14:00:41 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:00 | Volume Monitor | LOG_ERROR | 2026-11-27 14:00:27 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:00 | Volume Monitor | LOG_ERROR | 2026-11-27 14:00:27 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:01 | Signal Engine | LOG_ERROR | 2026-11-27 14:01:10 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:01 | Signal Engine | LOG_ERROR | 2026-11-27 14:01:13 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:01 | Signal Engine | LOG_ERROR | 2026-11-27 14:01:15 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:01 | Signal Engine | LOG_ERROR | 2026-11-27 14:01:42 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:01 | Volume Monitor | LOG_ERROR | 2026-11-27 14:01:37 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:01 | Volume Monitor | LOG_ERROR | 2026-11-27 14:01:38 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:02 | Signal Engine | LOG_ERROR | 2026-11-27 14:02:07 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:02 | Signal Engine | LOG_ERROR | 2026-11-27 14:02:09 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:02 | Signal Engine | LOG_ERROR | 2026-11-27 14:02:11 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:02 | Signal Engine | LOG_ERROR | 2026-11-27 14:02:13 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:02 | Volume Monitor | LOG_ERROR | 2026-11-27 14:02:46 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:03 | Rust Core | LOG_ERROR | [2m2026-11-27T07:03:13.912224Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 14:03 | Signal Engine | LOG_ERROR | 2026-11-27 14:03:16 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
+| 27.11.2026 14:03 | Volume Monitor | LOG_ERROR | 2026-11-27 14:02:46 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:03 | Rust Core | LOG_ERROR | [2m2026-11-27T07:03:45.512972Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 14:04 | Rust Core | LOG_ERROR | [2m2026-11-27T07:04:16.745794Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 14:04 | Volume Monitor | LOG_ERROR | 2026-11-27 14:03:54 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:04 | Volume Monitor | LOG_ERROR | 2026-11-27 14:03:54 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:05 | Volume Monitor | LOG_ERROR | 2026-11-27 14:05:01 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:05 | Volume Monitor | LOG_ERROR | 2026-11-27 14:05:02 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:06 | Volume Monitor | LOG_ERROR | 2026-11-27 14:06:09 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:06 | Volume Monitor | LOG_ERROR | 2026-11-27 14:06:10 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:07 | Rust Core | LOG_ERROR | [2m2026-11-27T07:07:16.839682Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 14:07 | Volume Monitor | LOG_ERROR | 2026-11-27 14:07:18 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:07 | Volume Monitor | LOG_ERROR | 2026-11-27 14:07:18 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:07 | Rust Core | LOG_ERROR | [2m2026-11-27T07:07:48.272130Z[0m [33m WARN[0m [2mrust_core::collectors::xt_futures[0m[2m:[0 |
+| 27.11.2026 14:08 | Volume Monitor | LOG_ERROR | 2026-11-27 14:08:26 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:08 | Volume Monitor | LOG_ERROR | 2026-11-27 14:08:26 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:09 | Volume Monitor | LOG_ERROR | 2026-11-27 14:09:33 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:09 | Volume Monitor | LOG_ERROR | 2026-11-27 14:09:33 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:10 | Volume Monitor | LOG_ERROR | 2026-11-27 14:10:43 [error    ] Error fetching meta from coinexfutures error='coinex GET https://api |
+| 27.11.2026 14:10 | Volume Monitor | LOG_ERROR | 2026-11-27 14:10:43 [warning  ] Could not fetch bulk funding rates for htx error='htx fetchFundingRa |
+| 27.11.2026 14:11 | Signal Engine | LOG_ERROR | 2026-11-27 14:11:50 [error    ] Failed to send alert in worker error='Telegram server says - Forbidd |
